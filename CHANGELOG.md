@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-03-28
+
 ### Added
 - Core summarization pipeline: poll ClickHouse for unsummarized sessions, build token-efficient context, summarize via LLM, write results back
 - Chunked extract-merge-synthesize pipeline for long sessions that exceed the LLM's context window
