@@ -6,7 +6,7 @@ import httpx
 import structlog
 
 from summarizer.config import Settings
-from summarizer.models import SessionSummary
+from summarizer.models import ChunkExtraction, SessionSummary
 
 logger = structlog.get_logger()
 
@@ -153,6 +153,70 @@ INSERT INTO session_summaries (
 
         await self._execute(sql)
         logger.info("session_summary_written", session_id=summary.session_id)
+
+    async def write_chunk_extraction(self, chunk: ChunkExtraction) -> None:
+        """Write a chunk extraction to ClickHouse."""
+
+        def fmt_array(arr: list[str]) -> str:
+            escaped = [v.replace("'", "\\'") for v in arr]
+            return "[" + ",".join(f"'{v}'" for v in escaped) + "]"
+
+        def fmt_ts(dt: datetime) -> str:
+            return dt.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+
+        sql = f"""\
+INSERT INTO session_chunk_extractions (
+    session_id, chunk_index, chunk_start_ts, chunk_end_ts, event_count,
+    files_changed, decisions, constraints, bugs_resolved, tradeoffs,
+    dependencies_changed, errors_encountered, test_actions,
+    security_relevant, rollback_risks, boundaries,
+    summarizer_model, summarizer_version, extracted_at
+) VALUES (
+    '{chunk.session_id}',
+    {chunk.chunk_index},
+    '{fmt_ts(chunk.chunk_start_ts)}',
+    '{fmt_ts(chunk.chunk_end_ts)}',
+    {chunk.event_count},
+    {fmt_array(chunk.files_changed)},
+    {fmt_array(chunk.decisions)},
+    {fmt_array(chunk.constraints)},
+    {fmt_array(chunk.bugs_resolved)},
+    {fmt_array(chunk.tradeoffs)},
+    {fmt_array(chunk.dependencies_changed)},
+    {fmt_array(chunk.errors_encountered)},
+    {fmt_array(chunk.test_actions)},
+    {fmt_array(chunk.security_relevant)},
+    {fmt_array(chunk.rollback_risks)},
+    {fmt_array(chunk.boundaries)},
+    '{chunk.summarizer_model}',
+    '{chunk.summarizer_version}',
+    '{fmt_ts(chunk.extracted_at)}'
+)"""
+
+        await self._execute(sql)
+        logger.info(
+            "chunk_extraction_written",
+            session_id=chunk.session_id,
+            chunk_index=chunk.chunk_index,
+        )
+
+    async def get_chunk_extractions(self, session_id: str, summarizer_version: str) -> list[dict]:
+        """Read existing chunk extractions for a session."""
+        sql = """\
+SELECT
+    chunk_index, chunk_start_ts, chunk_end_ts, event_count,
+    files_changed, decisions, constraints, bugs_resolved, tradeoffs,
+    dependencies_changed, errors_encountered, test_actions,
+    security_relevant, rollback_risks, boundaries
+FROM session_chunk_extractions FINAL
+WHERE session_id = {session_id:String}
+    AND summarizer_version = {version:String}
+ORDER BY chunk_index ASC"""
+
+        return await self._query(
+            sql,
+            params={"session_id": session_id, "version": summarizer_version},
+        )
 
 
 def compute_session_stats(events: list[dict]) -> dict:

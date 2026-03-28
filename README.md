@@ -55,9 +55,13 @@ All configuration is via environment variables:
 | `SESSION_COOLDOWN_MINUTES` | `30` | Minutes of inactivity before summarizing |
 | `LOOKBACK_HOURS` | `168` | How far back to look (default: 7 days) |
 | `BATCH_SIZE` | `10` | Max sessions per cycle |
-| `CONTEXT_MAX_CHARS` | `6000` | Max chars in LLM prompt context |
+| `CONTEXT_MAX_TOKENS` | `4096` | Model's context window in tokens |
+| `SESSION_LANGUAGE` | `en` | Session language for token budget calculation |
+| `CONTEXT_MAX_CHARS` | (calculated) | Manual override — skips token calculation if set |
 | `SUMMARIZER_VERSION` | `v1` | Bump to force re-summarization |
 | `LOG_LEVEL` | `info` | Logging level |
+
+The character budget for LLM prompts is calculated automatically from `CONTEXT_MAX_TOKENS` and `SESSION_LANGUAGE`. For example, a 32K-token Mistral model with German sessions (`CONTEXT_MAX_TOKENS=32768 SESSION_LANGUAGE=de`) gets a ~94K character budget. Set `CONTEXT_MAX_CHARS` to override the calculation.
 
 ## Development
 

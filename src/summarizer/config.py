@@ -17,7 +17,9 @@ class Settings(BaseSettings):
     session_cooldown_minutes: int = 30
     lookback_hours: int = 168
     batch_size: int = 10
-    context_max_chars: int = 6000
+    context_max_tokens: int = 4096
+    context_max_chars: int | None = None  # Manual override — skips token calculation if set
+    session_language: str = "en"
     summarizer_version: str = "v1"
 
     # Logging

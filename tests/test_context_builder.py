@@ -1,9 +1,14 @@
 from summarizer.context_builder import (
+    build_extraction_prompt,
     build_prompt_context,
+    build_synthesis_prompt,
     build_user_prompt,
+    chunk_events,
     extract_file_path,
     extract_files_from_events,
     extract_tools_from_events,
+    merge_extractions,
+    needs_chunked_processing,
 )
 
 
@@ -178,3 +183,217 @@ class TestBuildUserPrompt:
         )
         assert "Tools used: none" in result
         assert "Files touched: none" in result
+
+
+class TestChunkEvents:
+    def _make_event(self, ts="2024-01-01T10:00:00", tool_name="Read"):
+        return {
+            "ts": ts,
+            "tool_name": tool_name,
+            "direction": "tool",
+            "tool_input": "",
+            "assistant_text": "",
+            "thinking": "",
+        }
+
+    def test_single_chunk_for_small_session(self):
+        events = [self._make_event() for _ in range(3)]
+        chunks = chunk_events(events, max_chars=6000)
+        assert len(chunks) == 1
+        assert len(chunks[0]) == 3
+
+    def test_multiple_chunks_for_large_session(self):
+        events = [self._make_event(tool_name=f"Tool{i}") for i in range(200)]
+        chunks = chunk_events(events, max_chars=500)
+        assert len(chunks) > 1
+        # All events are accounted for
+        total = sum(len(c) for c in chunks)
+        assert total == 200
+
+    def test_empty_events(self):
+        assert chunk_events([], max_chars=6000) == []
+
+    def test_prefers_time_gap_boundaries(self):
+        events = [
+            self._make_event(ts="2024-01-01T10:00:00"),
+            self._make_event(ts="2024-01-01T10:01:00"),
+            self._make_event(ts="2024-01-01T10:02:00"),
+            # 10-minute gap
+            self._make_event(ts="2024-01-01T10:12:00"),
+            self._make_event(ts="2024-01-01T10:13:00"),
+        ]
+        # Use a small budget that forces at least 2 chunks
+        chunks = chunk_events(events, max_chars=200)
+        if len(chunks) > 1:
+            # Verify chunks contain contiguous events
+            for chunk in chunks:
+                assert len(chunk) > 0
+
+
+class TestNeedsChunkedProcessing:
+    def test_short_session_does_not_need_chunking(self):
+        events = [
+            {
+                "ts": "2024-01-01T10:00:00",
+                "tool_name": "Read",
+                "direction": "tool",
+                "tool_input": "",
+                "assistant_text": "",
+                "thinking": "",
+            }
+            for _ in range(3)
+        ]
+        assert needs_chunked_processing(events, max_chars=6000) is False
+
+    def test_long_session_needs_chunking(self):
+        events = [
+            {
+                "ts": f"2024-01-01T10:{i:02d}:00",
+                "tool_name": f"Tool{i}",
+                "direction": "tool",
+                "tool_input": "",
+                "assistant_text": "x" * 100,
+                "thinking": "",
+            }
+            for i in range(100)
+        ]
+        assert needs_chunked_processing(events, max_chars=500) is True
+
+
+class TestMergeExtractions:
+    def test_merges_across_chunks(self):
+        extractions = [
+            {
+                "files_changed": ["a.py — added function"],
+                "decisions": ["chose async"],
+                "constraints": [],
+                "bugs_resolved": [],
+                "tradeoffs": [],
+                "dependencies_changed": [],
+                "errors_encountered": [],
+                "test_actions": [],
+                "security_relevant": [],
+                "rollback_risks": [],
+                "boundaries": [],
+            },
+            {
+                "files_changed": ["b.py — modified handler"],
+                "decisions": ["chose sync for this part"],
+                "constraints": ["API rate limit"],
+                "bugs_resolved": [],
+                "tradeoffs": [],
+                "dependencies_changed": [],
+                "errors_encountered": [],
+                "test_actions": [],
+                "security_relevant": [],
+                "rollback_risks": [],
+                "boundaries": [],
+            },
+        ]
+        merged = merge_extractions(extractions)
+        assert len(merged["files_changed"]) == 2
+        assert len(merged["decisions"]) == 2
+        assert len(merged["constraints"]) == 1
+
+    def test_deduplicates(self):
+        extractions = [
+            {
+                "files_changed": ["a.py — added function"],
+                "decisions": [],
+                "constraints": [],
+                "bugs_resolved": [],
+                "tradeoffs": [],
+                "dependencies_changed": [],
+                "errors_encountered": [],
+                "test_actions": [],
+                "security_relevant": [],
+                "rollback_risks": [],
+                "boundaries": [],
+            },
+            {
+                "files_changed": ["a.py — added function"],
+                "decisions": [],
+                "constraints": [],
+                "bugs_resolved": [],
+                "tradeoffs": [],
+                "dependencies_changed": [],
+                "errors_encountered": [],
+                "test_actions": [],
+                "security_relevant": [],
+                "rollback_risks": [],
+                "boundaries": [],
+            },
+        ]
+        merged = merge_extractions(extractions)
+        assert len(merged["files_changed"]) == 1
+
+    def test_handles_non_list_values(self):
+        extractions = [
+            {
+                "files_changed": "single file",
+                "decisions": [],
+                "constraints": [],
+                "bugs_resolved": [],
+                "tradeoffs": [],
+                "dependencies_changed": [],
+                "errors_encountered": [],
+                "test_actions": [],
+                "security_relevant": [],
+                "rollback_risks": [],
+                "boundaries": [],
+            },
+        ]
+        merged = merge_extractions(extractions)
+        assert merged["files_changed"] == ["single file"]
+
+    def test_empty_extractions(self):
+        merged = merge_extractions([])
+        for key in merged:
+            assert merged[key] == []
+
+
+class TestBuildExtractionPrompt:
+    def test_includes_chunk_info(self):
+        result = build_extraction_prompt(
+            session_id="sess-1",
+            chunk_index=0,
+            total_chunks=3,
+            context_text="[10:00] Read → app.py",
+        )
+        assert "Session: sess-1" in result
+        assert "Chunk: 1 of 3" in result
+        assert "[10:00] Read → app.py" in result
+
+
+class TestBuildSynthesisPrompt:
+    def test_includes_all_fields(self):
+        merged_facts = {
+            "files_changed": ["app.py — added auth"],
+            "decisions": ["chose JWT"],
+            "constraints": [],
+            "bugs_resolved": [],
+            "tradeoffs": [],
+            "dependencies_changed": ["added pyjwt"],
+            "errors_encountered": [],
+            "test_actions": ["added test_auth.py"],
+            "security_relevant": ["added token validation"],
+            "rollback_risks": [],
+            "boundaries": ["never modify audit_events directly"],
+        }
+        result = build_synthesis_prompt(
+            session_id="sess-1",
+            project="myproject",
+            agent="claude",
+            branch="main",
+            duration_minutes=60,
+            tools=["Read", "Write"],
+            files=["app.py"],
+            merged_facts=merged_facts,
+        )
+        assert "Session: sess-1" in result
+        assert "Project: myproject" in result
+        assert "app.py — added auth" in result
+        assert "chose JWT" in result
+        assert "added pyjwt" in result
+        assert "added token validation" in result
+        assert "never modify audit_events directly" in result

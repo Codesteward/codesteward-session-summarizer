@@ -2,7 +2,7 @@ import httpx
 import pytest
 import respx
 
-from summarizer.llm import OllamaClient, parse_llm_response
+from summarizer.llm import OllamaClient, parse_extraction_response, parse_llm_response
 
 
 class TestParseLlmResponse:
@@ -177,6 +177,146 @@ tags:
         client = OllamaClient("http://localhost:11434", "phi3:mini")
         with pytest.raises(httpx.HTTPStatusError):
             await client.generate("system", "user")
+
+
+class TestOllamaClientGenerateExtraction:
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_generate_extraction_parses_facts(self):
+        yaml_response = """\
+files_changed:
+  - app.py — added auth middleware
+decisions:
+  - chose JWT over sessions
+constraints: []
+bugs_resolved: []
+tradeoffs:
+  - skipped refresh tokens for now
+dependencies_changed:
+  - added pyjwt 2.8
+errors_encountered: []
+test_actions:
+  - added test_auth.py
+security_relevant:
+  - added token validation on all routes
+rollback_risks: []
+boundaries:
+  - never call auth endpoint without rate limiting"""
+        respx.post("http://localhost:11434/api/generate").mock(
+            return_value=httpx.Response(200, json={"response": yaml_response})
+        )
+        client = OllamaClient("http://localhost:11434", "phi3:mini")
+        result = await client.generate_extraction("system", "user")
+        assert "app.py — added auth middleware" in result["files_changed"]
+        assert "chose JWT over sessions" in result["decisions"]
+        assert result["constraints"] == []
+        assert "skipped refresh tokens for now" in result["tradeoffs"]
+        assert "added pyjwt 2.8" in result["dependencies_changed"]
+        assert "never call auth endpoint without rate limiting" in result["boundaries"]
+        assert "added token validation on all routes" in result["security_relevant"]
+
+
+class TestParseExtractionResponse:
+    def test_valid_yaml(self):
+        raw = """\
+files_changed:
+  - app.py — new endpoint
+decisions:
+  - used async handler
+constraints:
+  - rate limit of 100 req/s
+bugs_resolved: []
+tradeoffs: []
+dependencies_changed: []
+errors_encountered:
+  - import error — fixed by adding package
+test_actions: []
+security_relevant: []
+rollback_risks:
+  - added DB migration
+boundaries:
+  - API must remain backward compatible"""
+        result = parse_extraction_response(raw)
+        assert len(result["files_changed"]) == 1
+        assert len(result["decisions"]) == 1
+        assert len(result["constraints"]) == 1
+        assert result["bugs_resolved"] == []
+        assert len(result["errors_encountered"]) == 1
+        assert len(result["rollback_risks"]) == 1
+        assert len(result["boundaries"]) == 1
+
+    def test_invalid_yaml_returns_empty(self):
+        result = parse_extraction_response("not valid yaml: [broken")
+        for key in result:
+            assert result[key] == []
+
+    def test_non_dict_returns_empty(self):
+        result = parse_extraction_response("- item1\n- item2")
+        for key in result:
+            assert result[key] == []
+
+    def test_with_code_fences(self):
+        raw = """\
+```yaml
+files_changed:
+  - config.py — updated defaults
+decisions: []
+constraints: []
+bugs_resolved: []
+tradeoffs: []
+dependencies_changed: []
+errors_encountered: []
+test_actions: []
+security_relevant: []
+rollback_risks: []
+boundaries: []
+```"""
+        result = parse_extraction_response(raw)
+        assert "config.py — updated defaults" in result["files_changed"]
+
+    def test_missing_keys_default_to_empty(self):
+        raw = "files_changed:\n  - something.py"
+        result = parse_extraction_response(raw)
+        assert len(result["files_changed"]) == 1
+        assert result["decisions"] == []
+        assert result["rollback_risks"] == []
+        assert result["boundaries"] == []
+
+    def test_non_list_values_coerced(self):
+        raw = """\
+files_changed: single file
+decisions: one decision
+constraints: []
+bugs_resolved: []
+tradeoffs: []
+dependencies_changed: []
+errors_encountered: []
+test_actions: []
+security_relevant: []
+rollback_risks: []
+boundaries: []"""
+        result = parse_extraction_response(raw)
+        assert result["files_changed"] == ["single file"]
+        assert result["decisions"] == ["one decision"]
+
+    def test_filters_empty_items(self):
+        raw = """\
+files_changed:
+  - good item
+  -
+  - another item
+decisions: []
+constraints: []
+bugs_resolved: []
+tradeoffs: []
+dependencies_changed: []
+errors_encountered: []
+test_actions: []
+security_relevant: []
+rollback_risks: []
+boundaries: []"""
+        result = parse_extraction_response(raw)
+        assert len(result["files_changed"]) == 2
 
 
 class TestOllamaClientPullModel:

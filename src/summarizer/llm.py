@@ -65,12 +65,8 @@ class OllamaClient:
         logger.info("llm_model_pull", model=self.model, reason="model_not_found")
         return await self.pull_model()
 
-    async def generate(self, system_prompt: str, user_prompt: str) -> dict:
-        """Call Ollama generate API and parse YAML response.
-
-        Returns parsed dict with keys: summary, key_decisions, tags.
-        On parse failure, returns dict with summary set to raw text and empty lists.
-        """
+    async def _call_api(self, system_prompt: str, user_prompt: str) -> str:
+        """Call Ollama generate API and return raw response text."""
         async with httpx.AsyncClient(timeout=120.0) as client:
             resp = await client.post(
                 f"{self.base_url}/api/generate",
@@ -86,9 +82,36 @@ class OllamaClient:
                 },
             )
             resp.raise_for_status()
-            raw = resp.json()["response"]
+            return resp.json()["response"]
 
+    async def generate(self, system_prompt: str, user_prompt: str) -> dict:
+        """Call Ollama generate API and parse YAML response.
+
+        Returns parsed dict with keys: summary, key_decisions, tags.
+        On parse failure, returns dict with summary set to raw text and empty lists.
+        """
+        raw = await self._call_api(system_prompt, user_prompt)
         return parse_llm_response(raw)
+
+    async def generate_extraction(self, system_prompt: str, user_prompt: str) -> dict:
+        """Call Ollama generate API and parse as extraction response.
+
+        Returns parsed dict with fact category keys, each as a list of strings.
+        """
+        raw = await self._call_api(system_prompt, user_prompt)
+        return parse_extraction_response(raw)
+
+
+def _strip_code_fences(text: str) -> str:
+    """Strip markdown code fences if present."""
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        lines = cleaned.split("\n")
+        lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        cleaned = "\n".join(lines)
+    return cleaned
 
 
 def parse_llm_response(raw: str) -> dict:
@@ -96,15 +119,7 @@ def parse_llm_response(raw: str) -> dict:
 
     Handles common issues: markdown code fences, invalid YAML, missing fields.
     """
-    # Strip markdown code fences if present
-    cleaned = raw.strip()
-    if cleaned.startswith("```"):
-        lines = cleaned.split("\n")
-        # Remove first and last lines (fences)
-        lines = lines[1:]
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        cleaned = "\n".join(lines)
+    cleaned = _strip_code_fences(raw)
 
     try:
         parsed = yaml.safe_load(cleaned)
@@ -143,3 +158,45 @@ def parse_llm_response(raw: str) -> dict:
         "key_decisions": key_decisions,
         "tags": tags,
     }
+
+
+_EXTRACTION_KEYS = [
+    "files_changed",
+    "decisions",
+    "constraints",
+    "bugs_resolved",
+    "tradeoffs",
+    "dependencies_changed",
+    "errors_encountered",
+    "test_actions",
+    "security_relevant",
+    "rollback_risks",
+    "boundaries",
+]
+
+
+def parse_extraction_response(raw: str) -> dict:
+    """Parse YAML extraction response from the LLM.
+
+    Returns dict with all fact category keys, each as a list of strings.
+    On parse failure, returns empty lists for all categories.
+    """
+    cleaned = _strip_code_fences(raw)
+
+    try:
+        parsed = yaml.safe_load(cleaned)
+    except yaml.YAMLError:
+        logger.warning("extraction_response_parse_failed", raw_length=len(raw))
+        return {key: [] for key in _EXTRACTION_KEYS}
+
+    if not isinstance(parsed, dict):
+        return {key: [] for key in _EXTRACTION_KEYS}
+
+    result: dict[str, list[str]] = {}
+    for key in _EXTRACTION_KEYS:
+        items = parsed.get(key, [])
+        if not isinstance(items, list):
+            items = [str(items)] if items else []
+        result[key] = [str(item).strip() for item in items if item]
+
+    return result

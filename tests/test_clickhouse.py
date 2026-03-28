@@ -6,7 +6,7 @@ import respx
 
 from summarizer.clickhouse import ClickHouseClient, compute_session_stats
 from summarizer.config import Settings
-from summarizer.models import SessionSummary
+from summarizer.models import ChunkExtraction, SessionSummary
 
 
 @pytest.fixture
@@ -154,6 +154,72 @@ class TestWriteSummary:
         await ch_client.write_summary(summary)
         body = route.calls[0].request.content.decode()
         assert "\\'" in body
+
+
+class TestWriteChunkExtraction:
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_sends_insert(self, ch_client):
+        route = respx.post("http://localhost:8123").mock(return_value=httpx.Response(200))
+        chunk = ChunkExtraction(
+            session_id="sess-1",
+            chunk_index=0,
+            chunk_start_ts=datetime(2024, 1, 1, 10, 0, tzinfo=UTC),
+            chunk_end_ts=datetime(2024, 1, 1, 10, 30, tzinfo=UTC),
+            event_count=15,
+            files_changed=["app.py — added endpoint"],
+            decisions=["chose async"],
+            constraints=["rate limit"],
+            bugs_resolved=[],
+            tradeoffs=["skipped caching"],
+            dependencies_changed=["added httpx"],
+            errors_encountered=[],
+            test_actions=["added test_app.py"],
+            security_relevant=[],
+            rollback_risks=["DB migration"],
+            boundaries=["never call this API synchronously"],
+            summarizer_model="phi3:mini",
+            summarizer_version="v1",
+            extracted_at=datetime(2024, 1, 1, 12, 0, tzinfo=UTC),
+        )
+        await ch_client.write_chunk_extraction(chunk)
+        assert route.called
+        body = route.calls[0].request.content.decode()
+        assert "INSERT INTO session_chunk_extractions" in body
+        assert "sess-1" in body
+        assert "chose async" in body
+        assert "DB migration" in body
+
+
+class TestGetChunkExtractions:
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_returns_extractions(self, ch_client):
+        data = [
+            {
+                "chunk_index": 0,
+                "chunk_start_ts": "2024-01-01T10:00:00",
+                "chunk_end_ts": "2024-01-01T10:30:00",
+                "event_count": 15,
+                "files_changed": ["app.py"],
+                "decisions": ["chose async"],
+                "constraints": [],
+                "bugs_resolved": [],
+                "tradeoffs": [],
+                "dependencies_changed": [],
+                "errors_encountered": [],
+                "test_actions": [],
+                "security_relevant": [],
+                "rollback_risks": [],
+                "boundaries": [],
+            },
+        ]
+        respx.post("http://localhost:8123").mock(
+            return_value=httpx.Response(200, json={"data": data})
+        )
+        result = await ch_client.get_chunk_extractions("sess-1", "v1")
+        assert len(result) == 1
+        assert result[0]["decisions"] == ["chose async"]
 
 
 class TestComputeSessionStats:
