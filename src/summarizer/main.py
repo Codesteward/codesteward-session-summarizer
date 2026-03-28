@@ -22,7 +22,7 @@ from summarizer.context_builder import (
     merge_extractions,
     needs_chunked_processing,
 )
-from summarizer.llm import OllamaClient
+from summarizer.llm import LLMClient, create_llm_client
 from summarizer.models import ChunkExtraction, SessionSummary
 from summarizer.token_budget import calculate_char_budget
 
@@ -32,7 +32,7 @@ MIN_SESSION_EVENTS = 3
 
 
 async def _llm_call_with_retry(
-    ollama: OllamaClient,
+    llm: LLMClient,
     system_prompt: str,
     user_prompt: str,
     session_id: str,
@@ -44,7 +44,7 @@ async def _llm_call_with_retry(
 
     If extraction=True, uses generate_extraction() for fact-category parsing.
     """
-    method = ollama.generate_extraction if extraction else ollama.generate
+    method = llm.generate_extraction if extraction else llm.generate
     for attempt in range(2):
         try:
             return await method(system_prompt, user_prompt)
@@ -74,7 +74,7 @@ async def _process_single_pass(
     tools: list[str],
     char_budget: int,
     ch: ClickHouseClient,
-    ollama: OllamaClient,
+    llm: LLMClient,
     settings: Settings,
 ) -> bool:
     """Single-pass summarization for short sessions."""
@@ -100,7 +100,7 @@ async def _process_single_pass(
 
     start_time = asyncio.get_event_loop().time()
     llm_result = await _llm_call_with_retry(
-        ollama, SYSTEM_PROMPT, user_prompt, session_id, "summarize"
+        llm, SYSTEM_PROMPT, user_prompt, session_id, "summarize"
     )
     if llm_result is None:
         return False
@@ -119,7 +119,7 @@ async def _process_chunked(
     tools: list[str],
     char_budget: int,
     ch: ClickHouseClient,
-    ollama: OllamaClient,
+    llm: LLMClient,
     settings: Settings,
 ) -> bool:
     """Chunked extract-merge-synthesize for long sessions."""
@@ -144,7 +144,7 @@ async def _process_chunked(
         )
 
         extraction = await _llm_call_with_retry(
-            ollama,
+            llm,
             EXTRACTION_SYSTEM_PROMPT,
             extraction_prompt,
             session_id,
@@ -207,7 +207,7 @@ async def _process_chunked(
 
     start_time = asyncio.get_event_loop().time()
     llm_result = await _llm_call_with_retry(
-        ollama, SYNTHESIS_SYSTEM_PROMPT, synthesis_prompt, session_id, "synthesize"
+        llm, SYNTHESIS_SYSTEM_PROMPT, synthesis_prompt, session_id, "synthesize"
     )
     if llm_result is None:
         return False
@@ -286,7 +286,7 @@ def _resolve_char_budget(settings: Settings) -> int:
 async def process_session(
     session_id: str,
     ch: ClickHouseClient,
-    ollama: OllamaClient,
+    llm: LLMClient,
     settings: Settings,
 ) -> bool:
     """Process a single session: load events, summarize, write result.
@@ -312,15 +312,15 @@ async def process_session(
 
     if needs_chunked_processing(events, max_chars=char_budget):
         return await _process_chunked(
-            session_id, events, stats, files, tools, char_budget, ch, ollama, settings
+            session_id, events, stats, files, tools, char_budget, ch, llm, settings
         )
     else:
         return await _process_single_pass(
-            session_id, events, stats, files, tools, char_budget, ch, ollama, settings
+            session_id, events, stats, files, tools, char_budget, ch, llm, settings
         )
 
 
-async def poll_cycle(ch: ClickHouseClient, ollama: OllamaClient, settings: Settings) -> None:
+async def poll_cycle(ch: ClickHouseClient, llm: LLMClient, settings: Settings) -> None:
     """Run one polling cycle: discover and process unsummarized sessions."""
     logger.info(
         "poll_started",
@@ -342,7 +342,7 @@ async def poll_cycle(ch: ClickHouseClient, ollama: OllamaClient, settings: Setti
     logger.info("sessions_found", count=len(session_ids))
 
     for session_id in session_ids:
-        await process_session(session_id, ch, ollama, settings)
+        await process_session(session_id, ch, llm, settings)
 
 
 async def run() -> None:
@@ -358,6 +358,7 @@ async def run() -> None:
     char_budget = _resolve_char_budget(settings)
     logger.info(
         "summarizer_starting",
+        provider=settings.llm_provider,
         model=settings.summarizer_model,
         poll_interval=settings.poll_interval_seconds,
         version=settings.summarizer_version,
@@ -366,10 +367,10 @@ async def run() -> None:
         char_budget=char_budget,
     )
 
-    ollama = OllamaClient(settings.ollama_url, settings.summarizer_model)
+    llm = create_llm_client(settings)
 
-    # Ensure model is available (pull if needed)
-    if not await ollama.ensure_model():
+    # Ensure model is available (pull if needed for Ollama)
+    if not await llm.ensure_model():
         logger.critical(
             "summarizer_startup_failed",
             reason="model_not_available",
@@ -380,7 +381,7 @@ async def run() -> None:
     ch = ClickHouseClient(settings)
 
     while True:
-        await poll_cycle(ch, ollama, settings)
+        await poll_cycle(ch, llm, settings)
         logger.debug("poll_sleeping", seconds=settings.poll_interval_seconds)
         await asyncio.sleep(settings.poll_interval_seconds)
 

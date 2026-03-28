@@ -1,6 +1,6 @@
 # codesteward-session-summarizer
 
-Background service that reads raw audit events from ClickHouse, summarizes development sessions using a local LLM via [Ollama](https://ollama.com), and writes structured summaries back to ClickHouse.
+Background service that reads raw audit events from ClickHouse, summarizes development sessions using an LLM, and writes structured summaries back to ClickHouse. Supports [Ollama](https://ollama.com) (local), OpenAI, and Anthropic as LLM providers.
 
 Summaries are served by the `session_summaries` MCP tool in `codesteward-mcp`.
 
@@ -8,7 +8,7 @@ Summaries are served by the `session_summaries` MCP tool in `codesteward-mcp`.
 
 1. **Poll** ClickHouse for sessions with no activity in the last 30 minutes (configurable)
 2. **Build** a token-efficient context from audit events (timestamps, tool names, file paths, assistant text snippets)
-3. **Summarize** via a local LLM (Ollama HTTP API) — produces a natural language summary, key decisions, and topic tags
+3. **Summarize** via an LLM (Ollama, OpenAI, or Anthropic) — produces a natural language summary, key decisions, and topic tags
 4. **Write** the structured summary back to ClickHouse (`session_summaries` table)
 
 The summarizer is idempotent: re-running produces the same results. Bumping `SUMMARIZER_VERSION` triggers re-summarization of all sessions.
@@ -19,10 +19,10 @@ The summarizer is idempotent: re-running produces the same results. Bumping `SUM
 
 - Python 3.12+
 - [uv](https://docs.astral.sh/uv/)
-- [Ollama](https://ollama.com) running locally
 - ClickHouse accessible via HTTP
+- An LLM provider: [Ollama](https://ollama.com) running locally, or an OpenAI/Anthropic API key
 
-### Run locally
+### Run with Ollama (default)
 
 ```bash
 uv sync
@@ -30,6 +30,20 @@ uv run python -m summarizer.main
 ```
 
 The summarizer will auto-pull the configured model on first start.
+
+### Run with OpenAI
+
+```bash
+uv sync --extra openai
+LLM_PROVIDER=openai SUMMARIZER_MODEL=gpt-4o-mini OPENAI_API_KEY=sk-... uv run python -m summarizer.main
+```
+
+### Run with Anthropic
+
+```bash
+uv sync --extra anthropic
+LLM_PROVIDER=anthropic SUMMARIZER_MODEL=claude-haiku-4-5-20251001 ANTHROPIC_API_KEY=sk-ant-... uv run python -m summarizer.main
+```
 
 ### Run with Docker Compose
 
@@ -49,8 +63,12 @@ All configuration is via environment variables:
 | `CLICKHOUSE_USER` | `default` | ClickHouse user |
 | `CLICKHOUSE_PASSWORD` | `""` | ClickHouse password |
 | `CLICKHOUSE_DATABASE` | `audit` | Database name |
+| `LLM_PROVIDER` | `ollama` | LLM provider: `ollama`, `openai`, or `anthropic` |
+| `SUMMARIZER_MODEL` | `phi3:mini` | Model name (provider-specific) |
 | `OLLAMA_URL` | `http://localhost:11434` | Ollama API endpoint |
-| `SUMMARIZER_MODEL` | `phi3:mini` | Ollama model name |
+| `OPENAI_API_KEY` | `""` | OpenAI API key (required when provider=openai) |
+| `OPENAI_BASE_URL` | *unset* | Custom OpenAI-compatible endpoint |
+| `ANTHROPIC_API_KEY` | `""` | Anthropic API key (required when provider=anthropic) |
 | `POLL_INTERVAL_SECONDS` | `300` | Seconds between polling cycles |
 | `SESSION_COOLDOWN_MINUTES` | `30` | Minutes of inactivity before summarizing |
 | `LOOKBACK_HOURS` | `168` | How far back to look (default: 7 days) |

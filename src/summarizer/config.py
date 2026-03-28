@@ -8,9 +8,19 @@ class Settings(BaseSettings):
     clickhouse_password: str = ""
     clickhouse_database: str = "audit"
 
+    # LLM provider
+    llm_provider: str = "ollama"  # "ollama", "openai", or "anthropic"
+    summarizer_model: str = "phi3:mini"
+
     # Ollama
     ollama_url: str = "http://localhost:11434"
-    summarizer_model: str = "phi3:mini"
+
+    # OpenAI (used when llm_provider=openai)
+    openai_api_key: str = ""
+    openai_base_url: str | None = None  # For OpenAI-compatible endpoints
+
+    # Anthropic (used when llm_provider=anthropic)
+    anthropic_api_key: str = ""
 
     # Processing
     poll_interval_seconds: int = 300

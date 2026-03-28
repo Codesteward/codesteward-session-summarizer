@@ -1,10 +1,41 @@
 from __future__ import annotations
 
+from typing import Protocol, runtime_checkable
+
 import httpx
 import structlog
 import yaml
 
 logger = structlog.get_logger()
+
+
+# ---------------------------------------------------------------------------
+# LLM client protocol
+# ---------------------------------------------------------------------------
+
+
+@runtime_checkable
+class LLMClient(Protocol):
+    """Interface that all LLM provider clients must satisfy."""
+
+    model: str
+
+    async def ensure_model(self) -> bool:
+        """Ensure the model is available. Returns True if ready."""
+        ...
+
+    async def generate(self, system_prompt: str, user_prompt: str) -> dict:
+        """Generate a summary. Returns parsed dict with summary/key_decisions/tags."""
+        ...
+
+    async def generate_extraction(self, system_prompt: str, user_prompt: str) -> dict:
+        """Generate a fact extraction. Returns parsed dict with fact category keys."""
+        ...
+
+
+# ---------------------------------------------------------------------------
+# Ollama client
+# ---------------------------------------------------------------------------
 
 
 class OllamaClient:
@@ -85,21 +116,155 @@ class OllamaClient:
             return resp.json()["response"]
 
     async def generate(self, system_prompt: str, user_prompt: str) -> dict:
-        """Call Ollama generate API and parse YAML response.
-
-        Returns parsed dict with keys: summary, key_decisions, tags.
-        On parse failure, returns dict with summary set to raw text and empty lists.
-        """
+        """Call Ollama generate API and parse YAML response."""
         raw = await self._call_api(system_prompt, user_prompt)
         return parse_llm_response(raw)
 
     async def generate_extraction(self, system_prompt: str, user_prompt: str) -> dict:
-        """Call Ollama generate API and parse as extraction response.
-
-        Returns parsed dict with fact category keys, each as a list of strings.
-        """
+        """Call Ollama generate API and parse as extraction response."""
         raw = await self._call_api(system_prompt, user_prompt)
         return parse_extraction_response(raw)
+
+
+# ---------------------------------------------------------------------------
+# OpenAI client
+# ---------------------------------------------------------------------------
+
+
+class OpenAIClient:
+    """Async client for the OpenAI API (or any OpenAI-compatible endpoint)."""
+
+    def __init__(self, model: str, api_key: str, base_url: str | None = None) -> None:
+        try:
+            from openai import AsyncOpenAI
+        except ImportError:
+            raise ImportError(
+                "The 'openai' package is required for LLM_PROVIDER=openai. "
+                "Install it with: uv sync --extra openai"
+            ) from None
+
+        self.model = model
+        kwargs: dict = {"api_key": api_key}
+        if base_url:
+            kwargs["base_url"] = base_url
+        self._client = AsyncOpenAI(**kwargs)
+
+    async def ensure_model(self) -> bool:
+        """Hosted models are always available."""
+        logger.info("llm_health_check", model=self.model, provider="openai", status="ready")
+        return True
+
+    async def _call_api(self, system_prompt: str, user_prompt: str) -> str:
+        resp = await self._client.chat.completions.create(
+            model=self.model,
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.3,
+            max_tokens=1024,
+        )
+        return resp.choices[0].message.content or ""
+
+    async def generate(self, system_prompt: str, user_prompt: str) -> dict:
+        raw = await self._call_api(system_prompt, user_prompt)
+        return parse_llm_response(raw)
+
+    async def generate_extraction(self, system_prompt: str, user_prompt: str) -> dict:
+        raw = await self._call_api(system_prompt, user_prompt)
+        return parse_extraction_response(raw)
+
+
+# ---------------------------------------------------------------------------
+# Anthropic client
+# ---------------------------------------------------------------------------
+
+
+class AnthropicClient:
+    """Async client for the Anthropic Messages API."""
+
+    def __init__(self, model: str, api_key: str) -> None:
+        try:
+            from anthropic import AsyncAnthropic
+        except ImportError:
+            raise ImportError(
+                "The 'anthropic' package is required for LLM_PROVIDER=anthropic. "
+                "Install it with: uv sync --extra anthropic"
+            ) from None
+
+        self.model = model
+        self._client = AsyncAnthropic(api_key=api_key)
+
+    async def ensure_model(self) -> bool:
+        """Hosted models are always available."""
+        logger.info("llm_health_check", model=self.model, provider="anthropic", status="ready")
+        return True
+
+    async def _call_api(self, system_prompt: str, user_prompt: str) -> str:
+        resp = await self._client.messages.create(
+            model=self.model,
+            max_tokens=1024,
+            system=system_prompt,
+            messages=[
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.3,
+        )
+        return resp.content[0].text
+
+    async def generate(self, system_prompt: str, user_prompt: str) -> dict:
+        raw = await self._call_api(system_prompt, user_prompt)
+        return parse_llm_response(raw)
+
+    async def generate_extraction(self, system_prompt: str, user_prompt: str) -> dict:
+        raw = await self._call_api(system_prompt, user_prompt)
+        return parse_extraction_response(raw)
+
+
+# ---------------------------------------------------------------------------
+# Client factory
+# ---------------------------------------------------------------------------
+
+_PROVIDERS = {"ollama", "openai", "anthropic"}
+
+
+def create_llm_client(settings) -> LLMClient:
+    """Create the appropriate LLM client based on settings.llm_provider."""
+    from summarizer.config import Settings
+
+    if not isinstance(settings, Settings):
+        raise TypeError(f"Expected Settings, got {type(settings)}")
+
+    provider = settings.llm_provider.lower().strip()
+    if provider not in _PROVIDERS:
+        raise ValueError(
+            f"Unknown LLM_PROVIDER={provider!r}. Must be one of: {', '.join(sorted(_PROVIDERS))}"
+        )
+
+    if provider == "ollama":
+        return OllamaClient(settings.ollama_url, settings.summarizer_model)
+
+    if provider == "openai":
+        if not settings.openai_api_key:
+            raise ValueError("OPENAI_API_KEY is required when LLM_PROVIDER=openai")
+        return OpenAIClient(
+            model=settings.summarizer_model,
+            api_key=settings.openai_api_key,
+            base_url=settings.openai_base_url,
+        )
+
+    # anthropic
+    if not settings.anthropic_api_key:
+        raise ValueError("ANTHROPIC_API_KEY is required when LLM_PROVIDER=anthropic")
+    return AnthropicClient(
+        model=settings.summarizer_model,
+        api_key=settings.anthropic_api_key,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Response parsing (shared across all providers)
+# ---------------------------------------------------------------------------
 
 
 def _strip_code_fences(text: str) -> str:

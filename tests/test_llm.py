@@ -2,7 +2,15 @@ import httpx
 import pytest
 import respx
 
-from summarizer.llm import OllamaClient, parse_extraction_response, parse_llm_response
+from summarizer.config import Settings
+from summarizer.llm import (
+    AnthropicClient,
+    OllamaClient,
+    OpenAIClient,
+    create_llm_client,
+    parse_extraction_response,
+    parse_llm_response,
+)
 
 
 class TestParseLlmResponse:
@@ -337,3 +345,70 @@ class TestOllamaClientPullModel:
         )
         client = OllamaClient("http://localhost:11434", "phi3:mini")
         assert await client.pull_model() is False
+
+
+class TestCreateLlmClient:
+    def test_creates_ollama_client(self):
+        settings = Settings(llm_provider="ollama", summarizer_model="phi3:mini")
+        client = create_llm_client(settings)
+        assert isinstance(client, OllamaClient)
+        assert client.model == "phi3:mini"
+
+    def test_creates_openai_client(self):
+        settings = Settings(
+            llm_provider="openai",
+            summarizer_model="gpt-4o-mini",
+            openai_api_key="sk-test-key",
+        )
+        client = create_llm_client(settings)
+        assert isinstance(client, OpenAIClient)
+        assert client.model == "gpt-4o-mini"
+
+    def test_creates_openai_client_with_base_url(self):
+        settings = Settings(
+            llm_provider="openai",
+            summarizer_model="gpt-4o-mini",
+            openai_api_key="sk-test-key",
+            openai_base_url="https://custom.endpoint.com/v1",
+        )
+        client = create_llm_client(settings)
+        assert isinstance(client, OpenAIClient)
+
+    def test_creates_anthropic_client(self):
+        settings = Settings(
+            llm_provider="anthropic",
+            summarizer_model="claude-haiku-4-5-20251001",
+            anthropic_api_key="sk-ant-test-key",
+        )
+        client = create_llm_client(settings)
+        assert isinstance(client, AnthropicClient)
+        assert client.model == "claude-haiku-4-5-20251001"
+
+    def test_unknown_provider_raises(self):
+        settings = Settings(llm_provider="unknown")
+        with pytest.raises(ValueError, match="Unknown LLM_PROVIDER"):
+            create_llm_client(settings)
+
+    def test_openai_missing_key_raises(self):
+        settings = Settings(llm_provider="openai", openai_api_key="")
+        with pytest.raises(ValueError, match="OPENAI_API_KEY is required"):
+            create_llm_client(settings)
+
+    def test_anthropic_missing_key_raises(self):
+        settings = Settings(llm_provider="anthropic", anthropic_api_key="")
+        with pytest.raises(ValueError, match="ANTHROPIC_API_KEY is required"):
+            create_llm_client(settings)
+
+
+class TestOpenAIClientEnsureModel:
+    @pytest.mark.asyncio
+    async def test_ensure_model_always_true(self):
+        client = OpenAIClient(model="gpt-4o-mini", api_key="sk-test")
+        assert await client.ensure_model() is True
+
+
+class TestAnthropicClientEnsureModel:
+    @pytest.mark.asyncio
+    async def test_ensure_model_always_true(self):
+        client = AnthropicClient(model="claude-haiku-4-5-20251001", api_key="sk-ant-test")
+        assert await client.ensure_model() is True
