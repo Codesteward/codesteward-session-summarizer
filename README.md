@@ -20,8 +20,7 @@
 <p align="center">
   <a href="#-quick-start">Quick Start</a> &bull;
   <a href="#-how-it-works">How It Works</a> &bull;
-  <a href="#-configuration">Configuration</a> &bull;
-  <a href="#-documentation">Documentation</a>
+  <a href="#-configuration">Configuration</a>
 </p>
 
 ---
@@ -167,17 +166,6 @@ uv run pytest
 uv run ruff check src/ tests/
 uv run ruff format --check src/ tests/
 ```
-
-See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for the full development guide.
-
-## 📚 Documentation
-
-|   | Document | Description |
-| - | -------- | ----------- |
-| 🏗️ | [Architecture](docs/ARCHITECTURE.md) | System context, pipeline flows, chunking strategy, ClickHouse tables |
-| ⚙️ | [Configuration](docs/CONFIGURATION.md) | Full environment variable reference with examples |
-| 🚢 | [Deployment](docs/DEPLOYMENT.md) | Docker, migrations, GPU setup, running without Docker |
-| 🛠️ | [Development](docs/DEVELOPMENT.md) | Setup, testing, module guide, adding fact categories |
 
 ## 📄 License
 
