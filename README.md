@@ -1,0 +1,78 @@
+# codesteward-session-summarizer
+
+Background service that reads raw audit events from ClickHouse, summarizes development sessions using a local LLM via [Ollama](https://ollama.com), and writes structured summaries back to ClickHouse.
+
+Summaries are served by the `session_summaries` MCP tool in `codesteward-mcp`.
+
+## How it works
+
+1. **Poll** ClickHouse for sessions with no activity in the last 30 minutes (configurable)
+2. **Build** a token-efficient context from audit events (timestamps, tool names, file paths, assistant text snippets)
+3. **Summarize** via a local LLM (Ollama HTTP API) — produces a natural language summary, key decisions, and topic tags
+4. **Write** the structured summary back to ClickHouse (`session_summaries` table)
+
+The summarizer is idempotent: re-running produces the same results. Bumping `SUMMARIZER_VERSION` triggers re-summarization of all sessions.
+
+## Quick start
+
+### Prerequisites
+
+- Python 3.12+
+- [uv](https://docs.astral.sh/uv/)
+- [Ollama](https://ollama.com) running locally
+- ClickHouse accessible via HTTP
+
+### Run locally
+
+```bash
+uv sync
+uv run python -m summarizer.main
+```
+
+The summarizer will auto-pull the configured model on first start.
+
+### Run with Docker Compose
+
+```bash
+docker compose up -d
+```
+
+This starts both the summarizer and an Ollama sidecar. The model is pulled automatically.
+
+## Configuration
+
+All configuration is via environment variables:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CLICKHOUSE_URL` | `http://localhost:8123` | ClickHouse HTTP interface |
+| `CLICKHOUSE_USER` | `default` | ClickHouse user |
+| `CLICKHOUSE_PASSWORD` | `""` | ClickHouse password |
+| `CLICKHOUSE_DATABASE` | `audit` | Database name |
+| `OLLAMA_URL` | `http://localhost:11434` | Ollama API endpoint |
+| `SUMMARIZER_MODEL` | `phi3:mini` | Ollama model name |
+| `POLL_INTERVAL_SECONDS` | `300` | Seconds between polling cycles |
+| `SESSION_COOLDOWN_MINUTES` | `30` | Minutes of inactivity before summarizing |
+| `LOOKBACK_HOURS` | `168` | How far back to look (default: 7 days) |
+| `BATCH_SIZE` | `10` | Max sessions per cycle |
+| `CONTEXT_MAX_CHARS` | `6000` | Max chars in LLM prompt context |
+| `SUMMARIZER_VERSION` | `v1` | Bump to force re-summarization |
+| `LOG_LEVEL` | `info` | Logging level |
+
+## Development
+
+```bash
+# Install all dependencies (including dev)
+uv sync
+
+# Run tests
+uv run pytest
+
+# Lint
+uv run ruff check src/ tests/
+uv run ruff format --check src/ tests/
+```
+
+## ClickHouse migration
+
+Apply `migrations/008_session_summaries.sql` to create the `session_summaries` table. This uses `ReplacingMergeTree(summarized_at)` to keep only the latest summary per session.

@@ -1,0 +1,37 @@
+[project]
+name = "codesteward-session-summarizer"
+version = "0.1.0"
+description = "Background service that summarizes dev sessions from ClickHouse audit events using a local LLM"
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.28",
+    "pydantic-settings>=2.7",
+    "structlog>=25.1",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3",
+    "pytest-asyncio>=0.25",
+    "ruff>=0.9",
+    "respx>=0.22",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/summarizer"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+src = ["src", "tests"]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W", "UP"]
