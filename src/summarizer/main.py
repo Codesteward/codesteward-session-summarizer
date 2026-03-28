@@ -68,6 +68,7 @@ async def _llm_call_with_retry(
 
 async def _process_single_pass(
     session_id: str,
+    revision: int,
     events: list[dict],
     stats: dict,
     files: list[str],
@@ -107,12 +108,13 @@ async def _process_single_pass(
     llm_duration_ms = int((asyncio.get_event_loop().time() - start_time) * 1000)
 
     return await _write_summary(
-        session_id, stats, files, tools, llm_result, llm_duration_ms, ch, settings
+        session_id, revision, stats, files, tools, llm_result, llm_duration_ms, ch, settings
     )
 
 
 async def _process_chunked(
     session_id: str,
+    revision: int,
     events: list[dict],
     stats: dict,
     files: list[str],
@@ -127,6 +129,7 @@ async def _process_chunked(
     logger.info(
         "session_summarizing",
         session_id=session_id,
+        revision=revision,
         event_count=len(events),
         mode="chunked",
         chunk_count=len(chunks),
@@ -159,6 +162,7 @@ async def _process_chunked(
         chunk_stats = compute_session_stats(chunk)
         chunk_extraction = ChunkExtraction(
             session_id=session_id,
+            revision=revision,
             chunk_index=i,
             chunk_start_ts=chunk_stats["first_ts"],
             chunk_end_ts=chunk_stats["last_ts"],
@@ -214,12 +218,13 @@ async def _process_chunked(
     llm_duration_ms = int((asyncio.get_event_loop().time() - start_time) * 1000)
 
     return await _write_summary(
-        session_id, stats, files, tools, llm_result, llm_duration_ms, ch, settings
+        session_id, revision, stats, files, tools, llm_result, llm_duration_ms, ch, settings
     )
 
 
 async def _write_summary(
     session_id: str,
+    revision: int,
     stats: dict,
     files: list[str],
     tools: list[str],
@@ -231,6 +236,7 @@ async def _write_summary(
     """Build and write a SessionSummary to ClickHouse."""
     summary = SessionSummary(
         session_id=session_id,
+        revision=revision,
         project=stats["project"],
         agent=stats["agent"],
         branch=stats["branch"],
@@ -262,6 +268,7 @@ async def _write_summary(
     logger.info(
         "session_summarized",
         session_id=session_id,
+        revision=revision,
         summary_length=len(summary.summary),
         tags=summary.tags,
         llm_duration_ms=llm_duration_ms,
@@ -309,14 +316,15 @@ async def process_session(
     files = extract_files_from_events(events)
     tools = extract_tools_from_events(events)
     char_budget = _resolve_char_budget(settings)
+    revision = await ch.get_next_revision(session_id)
 
     if needs_chunked_processing(events, max_chars=char_budget):
         return await _process_chunked(
-            session_id, events, stats, files, tools, char_budget, ch, llm, settings
+            session_id, revision, events, stats, files, tools, char_budget, ch, llm, settings
         )
     else:
         return await _process_single_pass(
-            session_id, events, stats, files, tools, char_budget, ch, llm, settings
+            session_id, revision, events, stats, files, tools, char_budget, ch, llm, settings
         )
 
 
@@ -346,7 +354,12 @@ async def poll_cycle(ch: ClickHouseClient, llm: LLMClient, settings: Settings) -
 
 
 async def run() -> None:
-    """Main entry point: configure, check health, and start polling loop."""
+    """Main entry point: configure, check health, and start processing.
+
+    Supports two run modes:
+    - "poll" (default): continuous polling loop, runs forever
+    - "once": single cycle, then exit — suitable for cron/scheduled jobs
+    """
     settings = Settings()
 
     structlog.configure(
@@ -355,12 +368,18 @@ async def run() -> None:
         ),
     )
 
+    run_mode = settings.run_mode.lower().strip()
+    if run_mode not in ("poll", "once"):
+        logger.critical("invalid_run_mode", run_mode=run_mode)
+        sys.exit(1)
+
     char_budget = _resolve_char_budget(settings)
     logger.info(
         "summarizer_starting",
         provider=settings.llm_provider,
         model=settings.summarizer_model,
-        poll_interval=settings.poll_interval_seconds,
+        run_mode=run_mode,
+        poll_interval=settings.poll_interval_seconds if run_mode == "poll" else None,
         version=settings.summarizer_version,
         context_max_tokens=settings.context_max_tokens,
         session_language=settings.session_language,
@@ -379,6 +398,11 @@ async def run() -> None:
         sys.exit(1)
 
     ch = ClickHouseClient(settings)
+
+    if run_mode == "once":
+        await poll_cycle(ch, llm, settings)
+        logger.info("summarizer_finished", run_mode="once")
+        return
 
     while True:
         await poll_cycle(ch, llm, settings)

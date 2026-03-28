@@ -4,6 +4,7 @@
 
 CREATE TABLE IF NOT EXISTS audit.session_summaries (
     session_id        String,
+    revision          UInt32 DEFAULT 1,  -- incrementing per session, preserves history
     project           String,
     agent             LowCardinality(String),
     branch            LowCardinality(String),
@@ -34,4 +35,4 @@ CREATE TABLE IF NOT EXISTS audit.session_summaries (
     summarizer_version LowCardinality(String)   -- Tracks prompt/code version
 ) ENGINE = ReplacingMergeTree(summarized_at)
 PARTITION BY toYYYYMM(first_ts)
-ORDER BY (project, session_id);
+ORDER BY (project, session_id, revision);

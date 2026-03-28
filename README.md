@@ -11,7 +11,7 @@ Summaries are served by the `session_summaries` MCP tool in `codesteward-mcp`.
 3. **Summarize** via an LLM (Ollama, OpenAI, or Anthropic) — produces a natural language summary, key decisions, and topic tags
 4. **Write** the structured summary back to ClickHouse (`session_summaries` table)
 
-The summarizer is idempotent: re-running produces the same results. Bumping `SUMMARIZER_VERSION` triggers re-summarization of all sessions.
+The summarizer is idempotent: re-running produces the same results. Bumping `SUMMARIZER_VERSION` triggers re-summarization of all sessions. Resumed sessions (with new events after a prior summary) are automatically detected and re-summarized. Each re-summarization creates a new revision, preserving prior summaries.
 
 ## Quick start
 
@@ -69,7 +69,8 @@ All configuration is via environment variables:
 | `OPENAI_API_KEY` | `""` | OpenAI API key (required when provider=openai) |
 | `OPENAI_BASE_URL` | *unset* | Custom OpenAI-compatible endpoint |
 | `ANTHROPIC_API_KEY` | `""` | Anthropic API key (required when provider=anthropic) |
-| `POLL_INTERVAL_SECONDS` | `300` | Seconds between polling cycles |
+| `RUN_MODE` | `poll` | `poll` (continuous) or `once` (single run, then exit) |
+| `POLL_INTERVAL_SECONDS` | `300` | Seconds between polling cycles (poll mode only) |
 | `SESSION_COOLDOWN_MINUTES` | `30` | Minutes of inactivity before summarizing |
 | `LOOKBACK_HOURS` | `168` | How far back to look (default: 7 days) |
 | `BATCH_SIZE` | `10` | Max sessions per cycle |
@@ -95,6 +96,14 @@ uv run ruff check src/ tests/
 uv run ruff format --check src/ tests/
 ```
 
-## ClickHouse migration
+## ClickHouse migrations
 
-Apply `migrations/008_session_summaries.sql` to create the `session_summaries` table. This uses `ReplacingMergeTree(summarized_at)` to keep only the latest summary per session.
+Apply both migration files:
+
+```bash
+clickhouse-client --multiquery < migrations/008_session_summaries.sql
+clickhouse-client --multiquery < migrations/009_session_chunk_extractions.sql
+```
+
+- `008_session_summaries.sql` — creates the `session_summaries` table with revision-based history. `ReplacingMergeTree(summarized_at)` deduplicates within the same `(session_id, revision)` pair while preserving all revisions.
+- `009_session_chunk_extractions.sql` — creates the `session_chunk_extractions` table for per-chunk fact extractions (used by the chunked pipeline for long sessions).

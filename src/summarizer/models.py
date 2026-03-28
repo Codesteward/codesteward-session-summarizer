@@ -7,6 +7,7 @@ from datetime import datetime
 @dataclass
 class SessionSummary:
     session_id: str
+    revision: int
     project: str
     agent: str
     branch: str
@@ -36,6 +37,7 @@ class SessionSummary:
 @dataclass
 class ChunkExtraction:
     session_id: str
+    revision: int
     chunk_index: int
     chunk_start_ts: datetime
     chunk_end_ts: datetime

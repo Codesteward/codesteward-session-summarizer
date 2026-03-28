@@ -59,16 +59,26 @@ class ClickHouseClient:
     ) -> list[str]:
         """Find sessions that need summarization."""
         sql = """\
-SELECT DISTINCT session_id
+SELECT session_id
 FROM audit_events
 WHERE ts > now() - INTERVAL {lookback_hours:UInt32} HOUR
-    AND session_id NOT IN (
-        SELECT session_id FROM session_summaries FINAL
-        WHERE summarizer_version = {current_version:String}
-    )
-    AND session_id NOT IN (
-        SELECT session_id FROM audit_events
-        WHERE ts > now() - INTERVAL {cooldown_minutes:UInt32} MINUTE
+GROUP BY session_id
+HAVING
+    -- Session must be idle (no events within the cooldown window)
+    max(ts) < now() - INTERVAL {cooldown_minutes:UInt32} MINUTE
+    -- Session must either have no summary for this version,
+    -- or have new events since it was last summarized
+    AND (
+        session_id NOT IN (
+            SELECT session_id FROM session_summaries FINAL
+            WHERE summarizer_version = {current_version:String}
+        )
+        OR max(ts) > (
+            SELECT coalesce(max(last_ts), toDateTime64('1970-01-01', 3))
+            FROM session_summaries FINAL
+            WHERE session_id = audit_events.session_id
+                AND summarizer_version = {current_version:String}
+        )
     )
 ORDER BY max(ts) DESC
 LIMIT {batch_size:UInt32}"""
@@ -83,6 +93,21 @@ LIMIT {batch_size:UInt32}"""
             },
         )
         return [row["session_id"] for row in rows]
+
+    async def get_next_revision(self, session_id: str) -> int:
+        """Get the next revision number for a session.
+
+        Returns 1 if no prior summaries exist, otherwise max(revision) + 1.
+        """
+        sql = """\
+SELECT max(revision) AS max_rev
+FROM session_summaries FINAL
+WHERE session_id = {session_id:String}"""
+
+        rows = await self._query(sql, params={"session_id": session_id})
+        if rows and rows[0].get("max_rev"):
+            return int(rows[0]["max_rev"]) + 1
+        return 1
 
     async def get_session_events(self, session_id: str) -> list[dict]:
         """Load all events for a session, ordered by timestamp."""
@@ -121,7 +146,7 @@ ORDER BY ts ASC"""
 
         sql = f"""\
 INSERT INTO session_summaries (
-    session_id, project, agent, branch, user, team,
+    session_id, revision, project, agent, branch, user, team,
     first_ts, last_ts, duration_minutes,
     turn_count, tool_call_count,
     total_input_tokens, total_output_tokens,
@@ -129,6 +154,7 @@ INSERT INTO session_summaries (
     summarizer_model, summarized_at, summarizer_version
 ) VALUES (
     '{summary.session_id}',
+    {summary.revision},
     '{summary.project}',
     '{summary.agent}',
     '{summary.branch}',
@@ -166,13 +192,14 @@ INSERT INTO session_summaries (
 
         sql = f"""\
 INSERT INTO session_chunk_extractions (
-    session_id, chunk_index, chunk_start_ts, chunk_end_ts, event_count,
+    session_id, revision, chunk_index, chunk_start_ts, chunk_end_ts, event_count,
     files_changed, decisions, constraints, bugs_resolved, tradeoffs,
     dependencies_changed, errors_encountered, test_actions,
     security_relevant, rollback_risks, boundaries,
     summarizer_model, summarizer_version, extracted_at
 ) VALUES (
     '{chunk.session_id}',
+    {chunk.revision},
     {chunk.chunk_index},
     '{fmt_ts(chunk.chunk_start_ts)}',
     '{fmt_ts(chunk.chunk_end_ts)}',

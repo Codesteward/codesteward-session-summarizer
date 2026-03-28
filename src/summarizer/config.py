@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
 
     # Processing
+    run_mode: str = "poll"  # "poll" (continuous) or "once" (single run, then exit)
     poll_interval_seconds: int = 300
     session_cooldown_minutes: int = 30
     lookback_hours: int = 168

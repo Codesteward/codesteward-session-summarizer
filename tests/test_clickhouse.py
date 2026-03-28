@@ -96,6 +96,7 @@ class TestWriteSummary:
         route = respx.post("http://localhost:8123").mock(return_value=httpx.Response(200))
         summary = SessionSummary(
             session_id="sess-1",
+            revision=1,
             project="myproject",
             agent="claude",
             branch="main",
@@ -130,6 +131,7 @@ class TestWriteSummary:
         route = respx.post("http://localhost:8123").mock(return_value=httpx.Response(200))
         summary = SessionSummary(
             session_id="sess-1",
+            revision=1,
             project="project",
             agent="agent",
             branch="main",
@@ -163,6 +165,7 @@ class TestWriteChunkExtraction:
         route = respx.post("http://localhost:8123").mock(return_value=httpx.Response(200))
         chunk = ChunkExtraction(
             session_id="sess-1",
+            revision=1,
             chunk_index=0,
             chunk_start_ts=datetime(2024, 1, 1, 10, 0, tzinfo=UTC),
             chunk_end_ts=datetime(2024, 1, 1, 10, 30, tzinfo=UTC),
@@ -189,6 +192,35 @@ class TestWriteChunkExtraction:
         assert "sess-1" in body
         assert "chose async" in body
         assert "DB migration" in body
+
+
+class TestGetNextRevision:
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_returns_next_revision(self, ch_client):
+        respx.post("http://localhost:8123").mock(
+            return_value=httpx.Response(200, json={"data": [{"max_rev": 3}]})
+        )
+        result = await ch_client.get_next_revision("sess-1")
+        assert result == 4
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_returns_1_for_new_session(self, ch_client):
+        respx.post("http://localhost:8123").mock(
+            return_value=httpx.Response(200, json={"data": [{"max_rev": 0}]})
+        )
+        result = await ch_client.get_next_revision("sess-new")
+        assert result == 1
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_returns_1_for_empty_result(self, ch_client):
+        respx.post("http://localhost:8123").mock(
+            return_value=httpx.Response(200, json={"data": []})
+        )
+        result = await ch_client.get_next_revision("sess-new")
+        assert result == 1
 
 
 class TestGetChunkExtractions:

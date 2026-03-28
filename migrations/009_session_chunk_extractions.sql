@@ -5,6 +5,7 @@
 
 CREATE TABLE IF NOT EXISTS audit.session_chunk_extractions (
     session_id         String,
+    revision           UInt32 DEFAULT 1,  -- matches session_summaries.revision
     chunk_index        UInt16,
     chunk_start_ts     DateTime64(3),
     chunk_end_ts       DateTime64(3),
@@ -29,4 +30,4 @@ CREATE TABLE IF NOT EXISTS audit.session_chunk_extractions (
     extracted_at       DateTime64(3)
 ) ENGINE = ReplacingMergeTree(extracted_at)
 PARTITION BY toYYYYMM(chunk_start_ts)
-ORDER BY (session_id, chunk_index);
+ORDER BY (session_id, revision, chunk_index);
