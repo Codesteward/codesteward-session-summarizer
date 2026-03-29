@@ -66,6 +66,79 @@ async def _llm_call_with_retry(
     return None
 
 
+async def _extract_and_persist_facts(
+    session_id: str,
+    revision: int,
+    events: list[dict],
+    char_budget: int,
+    ch: ClickHouseClient,
+    llm: LLMClient,
+    settings: Settings,
+    *,
+    chunk_index: int = 0,
+    total_chunks: int = 1,
+) -> dict | None:
+    """Extract structured facts from events and persist as a chunk extraction.
+
+    Returns the extraction dict on success, or None on LLM failure.
+    """
+    context_text = build_prompt_context(events, max_chars=char_budget)
+    extraction_prompt = build_extraction_prompt(
+        session_id=session_id,
+        chunk_index=chunk_index,
+        total_chunks=total_chunks,
+        context_text=context_text,
+    )
+
+    extraction = await _llm_call_with_retry(
+        llm,
+        EXTRACTION_SYSTEM_PROMPT,
+        extraction_prompt,
+        session_id,
+        f"extract_chunk_{chunk_index}",
+        extraction=True,
+    )
+    if extraction is None:
+        return None
+
+    chunk_stats = compute_session_stats(events)
+    chunk_extraction = ChunkExtraction(
+        session_id=session_id,
+        revision=revision,
+        chunk_index=chunk_index,
+        chunk_start_ts=chunk_stats["first_ts"],
+        chunk_end_ts=chunk_stats["last_ts"],
+        event_count=len(events),
+        files_changed=extraction.get("files_changed", []),
+        decisions=extraction.get("decisions", []),
+        constraints=extraction.get("constraints", []),
+        bugs_resolved=extraction.get("bugs_resolved", []),
+        tradeoffs=extraction.get("tradeoffs", []),
+        dependencies_changed=extraction.get("dependencies_changed", []),
+        errors_encountered=extraction.get("errors_encountered", []),
+        test_actions=extraction.get("test_actions", []),
+        security_relevant=extraction.get("security_relevant", []),
+        rollback_risks=extraction.get("rollback_risks", []),
+        boundaries=extraction.get("boundaries", []),
+        summarizer_model=settings.summarizer_model,
+        summarizer_version=settings.summarizer_version,
+        extracted_at=datetime.now(tz=UTC),
+    )
+
+    try:
+        await ch.write_chunk_extraction(chunk_extraction)
+    except Exception as exc:
+        logger.error(
+            "chunk_extraction_write_failed",
+            session_id=session_id,
+            chunk_index=chunk_index,
+            error=str(exc),
+        )
+        # Continue — extraction is persisted best-effort
+
+    return extraction
+
+
 async def _process_single_pass(
     session_id: str,
     revision: int,
@@ -87,6 +160,13 @@ async def _process_single_pass(
         context_chars=len(context_text),
         mode="single_pass",
     )
+
+    # Extract structured facts (persisted as chunk_index=0)
+    extraction = await _extract_and_persist_facts(
+        session_id, revision, events, char_budget, ch, llm, settings
+    )
+    if extraction is None:
+        return False
 
     user_prompt = build_user_prompt(
         session_id=session_id,
@@ -138,61 +218,13 @@ async def _process_chunked(
     # Step 1: Extract facts from each chunk
     extractions: list[dict] = []
     for i, chunk in enumerate(chunks):
-        context_text = build_prompt_context(chunk, max_chars=char_budget)
-        extraction_prompt = build_extraction_prompt(
-            session_id=session_id,
-            chunk_index=i,
+        extraction = await _extract_and_persist_facts(
+            session_id, revision, chunk, char_budget, ch, llm, settings, chunk_index=i,
             total_chunks=len(chunks),
-            context_text=context_text,
-        )
-
-        extraction = await _llm_call_with_retry(
-            llm,
-            EXTRACTION_SYSTEM_PROMPT,
-            extraction_prompt,
-            session_id,
-            f"extract_chunk_{i}",
-            extraction=True,
         )
         if extraction is None:
             return False
         extractions.append(extraction)
-
-        # Write chunk extraction to ClickHouse
-        chunk_stats = compute_session_stats(chunk)
-        chunk_extraction = ChunkExtraction(
-            session_id=session_id,
-            revision=revision,
-            chunk_index=i,
-            chunk_start_ts=chunk_stats["first_ts"],
-            chunk_end_ts=chunk_stats["last_ts"],
-            event_count=len(chunk),
-            files_changed=extraction.get("files_changed", []),
-            decisions=extraction.get("decisions", []),
-            constraints=extraction.get("constraints", []),
-            bugs_resolved=extraction.get("bugs_resolved", []),
-            tradeoffs=extraction.get("tradeoffs", []),
-            dependencies_changed=extraction.get("dependencies_changed", []),
-            errors_encountered=extraction.get("errors_encountered", []),
-            test_actions=extraction.get("test_actions", []),
-            security_relevant=extraction.get("security_relevant", []),
-            rollback_risks=extraction.get("rollback_risks", []),
-            boundaries=extraction.get("boundaries", []),
-            summarizer_model=settings.summarizer_model,
-            summarizer_version=settings.summarizer_version,
-            extracted_at=datetime.now(tz=UTC),
-        )
-
-        try:
-            await ch.write_chunk_extraction(chunk_extraction)
-        except Exception as exc:
-            logger.error(
-                "chunk_extraction_write_failed",
-                session_id=session_id,
-                chunk_index=i,
-                error=str(exc),
-            )
-            # Continue — extraction is persisted best-effort
 
     # Step 2: Merge all extracted facts
     merged_facts = merge_extractions(extractions)
