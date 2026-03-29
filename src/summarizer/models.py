@@ -32,6 +32,9 @@ class SessionSummary:
     summarizer_model: str = ""
     summarized_at: datetime = field(default_factory=datetime.utcnow)
     summarizer_version: str = "v1"
+    prompt_id: str = ""
+    prompt_hash: str = ""
+    input_context_hash: str = ""
 
 
 @dataclass
@@ -58,3 +61,29 @@ class ChunkExtraction:
     summarizer_model: str = ""
     summarizer_version: str = "v1"
     extracted_at: datetime = field(default_factory=datetime.utcnow)
+    prompt_id: str = ""
+    prompt_hash: str = ""
+    input_context_hash: str = ""
+
+
+@dataclass
+class ChunkEvaluationContext:
+    session_id: str
+    revision: int
+    chunk_index: int
+    prompt_id: str
+    prompt_hash: str
+    input_context_hash: str
+    input_context: str
+    stored_at: datetime
+
+
+@dataclass
+class SummaryEvaluationContext:
+    session_id: str
+    revision: int
+    prompt_id: str
+    prompt_hash: str
+    input_context_hash: str
+    input_context: str
+    stored_at: datetime
