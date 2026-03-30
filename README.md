@@ -137,21 +137,29 @@ All configuration is via environment variables:
 | `SESSION_LANGUAGE` | `en` | Session language for token budget calculation |
 | `CONTEXT_MAX_CHARS` | (calculated) | Manual override — skips token calculation if set |
 | `SUMMARIZER_VERSION` | `v1` | Bump to force re-summarization |
+| `PROMPT_SOURCE` | `code` | `code` = hardcoded prompts, `database` = load from `prompt_registry` table |
+| `EVALUATION_ENABLED` | `false` | When `true`, store full input contexts for downstream evaluation |
 | `LOG_LEVEL` | `info` | Logging level |
 
 The character budget for LLM prompts is calculated automatically from `CONTEXT_MAX_TOKENS` and `SESSION_LANGUAGE`. For example, a 32K-token Mistral model with German sessions (`CONTEXT_MAX_TOKENS=32768 SESSION_LANGUAGE=de`) gets a ~94K character budget. Set `CONTEXT_MAX_CHARS` to override the calculation.
 
 ## 🗄️ ClickHouse migrations
 
-Apply both migration files before running the summarizer:
+Apply migration files before running the summarizer:
 
 ```bash
-clickhouse-client --multiquery < migrations/008_session_summaries.sql
-clickhouse-client --multiquery < migrations/009_session_chunk_extractions.sql
+clickhouse-client --multiquery < migrations/001_session_summaries.sql
+clickhouse-client --multiquery < migrations/002_session_chunk_extractions.sql
+clickhouse-client --multiquery < migrations/003_prompt_registry.sql
+clickhouse-client --multiquery < migrations/004_prompt_provenance.sql
+clickhouse-client --multiquery < migrations/005_evaluation_contexts.sql
 ```
 
-- `008_session_summaries.sql` — creates the `session_summaries` table with revision-based history. `ReplacingMergeTree(summarized_at)` deduplicates within the same `(session_id, revision)` pair while preserving all revisions.
-- `009_session_chunk_extractions.sql` — creates the `session_chunk_extractions` table for per-chunk fact extractions (used by the chunked pipeline for long sessions).
+- `001_session_summaries.sql` — creates the `session_summaries` table with revision-based history
+- `002_session_chunk_extractions.sql` — creates the `session_chunk_extractions` table for per-chunk fact extractions
+- `003_prompt_registry.sql` — creates the `prompt_registry` table for database-driven prompt management
+- `004_prompt_provenance.sql` — adds `prompt_id`, `prompt_hash`, `input_context_hash` columns to output tables
+- `005_evaluation_contexts.sql` — creates TTL-managed tables for storing evaluation input contexts
 
 ## 🛠️ Development
 

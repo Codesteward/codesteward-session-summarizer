@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-03-30
+
+### Added
+- Prompt provenance tracking: every summary and chunk extraction is tagged with `prompt_id`, `prompt_hash`, and `input_context_hash`
+- Database-driven prompt loading (`PROMPT_SOURCE=database`) with automatic fallback to code defaults when no active prompt exists
+- Optional evaluation data collection (`EVALUATION_ENABLED=true`) storing full input contexts in TTL-managed ClickHouse tables for downstream quality evaluation
+- Prompt registry table (`prompt_registry`) for managing prompt versions with lineage tracking
+- `hashing.py` utility for deterministic SHA-256 hash computation (truncated to 16 hex chars)
+
 ## [0.3.0] - 2026-03-28
 
 ### Added
