@@ -6,7 +6,12 @@ import respx
 
 from summarizer.clickhouse import ClickHouseClient, compute_session_stats
 from summarizer.config import Settings
-from summarizer.models import ChunkExtraction, SessionSummary
+from summarizer.models import (
+    ChunkEvaluationContext,
+    ChunkExtraction,
+    SessionSummary,
+    SummaryEvaluationContext,
+)
 
 
 @pytest.fixture
@@ -313,3 +318,159 @@ class TestComputeSessionStats:
         stats = compute_session_stats(events)
         assert stats["total_input_tokens"] == 0
         assert stats["total_output_tokens"] == 0
+
+
+class TestWriteSummaryProvenance:
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_includes_provenance_columns(self, ch_client):
+        route = respx.post("http://localhost:8123").mock(return_value=httpx.Response(200))
+        summary = SessionSummary(
+            session_id="sess-1",
+            revision=1,
+            project="project",
+            agent="agent",
+            branch="main",
+            user="",
+            team="",
+            first_ts=datetime(2024, 1, 1, tzinfo=UTC),
+            last_ts=datetime(2024, 1, 1, tzinfo=UTC),
+            duration_minutes=0,
+            turn_count=0,
+            tool_call_count=0,
+            total_input_tokens=0,
+            total_output_tokens=0,
+            summary="Test summary",
+            summarizer_model="phi3:mini",
+            summarized_at=datetime(2024, 1, 1, tzinfo=UTC),
+            summarizer_version="v1",
+            prompt_id="prompt-v2",
+            prompt_hash="abc123def456",
+            input_context_hash="hash789",
+        )
+        await ch_client.write_summary(summary)
+        body = route.calls[0].request.content.decode()
+        assert "prompt_id" in body
+        assert "prompt_hash" in body
+        assert "input_context_hash" in body
+        assert "prompt-v2" in body
+        assert "abc123def456" in body
+        assert "hash789" in body
+
+
+class TestWriteChunkExtractionProvenance:
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_includes_provenance_columns(self, ch_client):
+        route = respx.post("http://localhost:8123").mock(return_value=httpx.Response(200))
+        chunk = ChunkExtraction(
+            session_id="sess-1",
+            revision=1,
+            chunk_index=0,
+            chunk_start_ts=datetime(2024, 1, 1, 10, 0, tzinfo=UTC),
+            chunk_end_ts=datetime(2024, 1, 1, 10, 30, tzinfo=UTC),
+            event_count=10,
+            summarizer_model="phi3:mini",
+            summarizer_version="v1",
+            extracted_at=datetime(2024, 1, 1, 12, 0, tzinfo=UTC),
+            prompt_id="extract-v3",
+            prompt_hash="deadbeef1234",
+            input_context_hash="ctx5678",
+        )
+        await ch_client.write_chunk_extraction(chunk)
+        body = route.calls[0].request.content.decode()
+        assert "prompt_id" in body
+        assert "prompt_hash" in body
+        assert "input_context_hash" in body
+        assert "extract-v3" in body
+        assert "deadbeef1234" in body
+        assert "ctx5678" in body
+
+
+class TestGetActivePrompt:
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_returns_active_prompt(self, ch_client):
+        respx.post("http://localhost:8123").mock(
+            return_value=httpx.Response(
+                200,
+                json={
+                    "data": [
+                        {
+                            "prompt_id": "extraction-v2",
+                            "prompt_hash": "abcdef1234567890",
+                            "prompt_text": "You are an extractor...",
+                        }
+                    ]
+                },
+            )
+        )
+        result = await ch_client.get_active_prompt("extraction")
+        assert result is not None
+        assert result["prompt_id"] == "extraction-v2"
+        assert result["prompt_hash"] == "abcdef1234567890"
+        assert result["prompt_text"] == "You are an extractor..."
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_returns_none_when_no_active_prompt(self, ch_client):
+        respx.post("http://localhost:8123").mock(
+            return_value=httpx.Response(200, json={"data": []})
+        )
+        result = await ch_client.get_active_prompt("extraction")
+        assert result is None
+
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_queries_correct_role(self, ch_client):
+        route = respx.post("http://localhost:8123").mock(
+            return_value=httpx.Response(200, json={"data": []})
+        )
+        await ch_client.get_active_prompt("synthesis")
+        request = route.calls[0].request
+        assert "param_role" in str(request.url)
+
+
+class TestWriteChunkEvaluationContext:
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_sends_insert(self, ch_client):
+        route = respx.post("http://localhost:8123").mock(return_value=httpx.Response(200))
+        context = ChunkEvaluationContext(
+            session_id="sess-1",
+            revision=1,
+            chunk_index=0,
+            prompt_id="extraction-v1",
+            prompt_hash="abc123",
+            input_context_hash="ctx456",
+            input_context="Session: sess-1\nChunk: 1 of 1\n\nTimeline:\n...",
+            stored_at=datetime(2024, 1, 1, 12, 0, tzinfo=UTC),
+        )
+        await ch_client.write_chunk_evaluation_context(context)
+        assert route.called
+        body = route.calls[0].request.content.decode()
+        assert "INSERT INTO chunk_evaluation_contexts" in body
+        assert "sess-1" in body
+        assert "extraction-v1" in body
+
+
+class TestWriteSummaryEvaluationContext:
+    @pytest.mark.asyncio
+    @respx.mock
+    async def test_sends_insert(self, ch_client):
+        route = respx.post("http://localhost:8123").mock(return_value=httpx.Response(200))
+        context = SummaryEvaluationContext(
+            session_id="sess-1",
+            revision=1,
+            prompt_id="summary-v1",
+            prompt_hash="def789",
+            input_context_hash="ctx012",
+            input_context="Session: sess-1\nProject: myproject\n...",
+            stored_at=datetime(2024, 1, 1, 12, 0, tzinfo=UTC),
+        )
+        await ch_client.write_summary_evaluation_context(context)
+        assert route.called
+        body = route.calls[0].request.content.decode()
+        assert "INSERT INTO summary_evaluation_contexts" in body
+        assert "sess-1" in body
+        assert "summary-v1" in body

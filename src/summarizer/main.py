@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 import structlog
@@ -22,13 +23,38 @@ from summarizer.context_builder import (
     merge_extractions,
     needs_chunked_processing,
 )
+from summarizer.hashing import compute_hash
 from summarizer.llm import LLMClient, create_llm_client
-from summarizer.models import ChunkExtraction, SessionSummary
+from summarizer.models import (
+    ChunkEvaluationContext,
+    ChunkExtraction,
+    SessionSummary,
+    SummaryEvaluationContext,
+)
 from summarizer.token_budget import calculate_char_budget
 
 logger = structlog.get_logger()
 
 MIN_SESSION_EVENTS = 3
+
+# Default prompt IDs used when prompts come from code
+_CODE_DEFAULT_PROMPT_ID = ""
+
+# Maps prompt roles to their code default constants
+_CODE_DEFAULTS: dict[str, str] = {
+    "extraction": EXTRACTION_SYSTEM_PROMPT,
+    "synthesis": SYNTHESIS_SYSTEM_PROMPT,
+    "summary": SYSTEM_PROMPT,
+}
+
+
+@dataclass
+class PromptInfo:
+    """Holds a prompt's text and provenance metadata."""
+
+    prompt_id: str
+    prompt_text: str
+    prompt_hash: str
 
 
 async def _llm_call_with_retry(
@@ -74,6 +100,7 @@ async def _extract_and_persist_facts(
     ch: ClickHouseClient,
     llm: LLMClient,
     settings: Settings,
+    extraction_prompt_info: PromptInfo,
     *,
     chunk_index: int = 0,
     total_chunks: int = 1,
@@ -92,7 +119,7 @@ async def _extract_and_persist_facts(
 
     extraction = await _llm_call_with_retry(
         llm,
-        EXTRACTION_SYSTEM_PROMPT,
+        extraction_prompt_info.prompt_text,
         extraction_prompt,
         session_id,
         f"extract_chunk_{chunk_index}",
@@ -100,6 +127,8 @@ async def _extract_and_persist_facts(
     )
     if extraction is None:
         return None
+
+    input_context_hash = compute_hash(extraction_prompt)
 
     chunk_stats = compute_session_stats(events)
     chunk_extraction = ChunkExtraction(
@@ -123,6 +152,9 @@ async def _extract_and_persist_facts(
         summarizer_model=settings.summarizer_model,
         summarizer_version=settings.summarizer_version,
         extracted_at=datetime.now(tz=UTC),
+        prompt_id=extraction_prompt_info.prompt_id,
+        prompt_hash=extraction_prompt_info.prompt_hash,
+        input_context_hash=input_context_hash,
     )
 
     try:
@@ -135,6 +167,29 @@ async def _extract_and_persist_facts(
             error=str(exc),
         )
         # Continue — extraction is persisted best-effort
+
+    # Store evaluation context if enabled
+    if settings.evaluation_enabled:
+        try:
+            await ch.write_chunk_evaluation_context(
+                ChunkEvaluationContext(
+                    session_id=session_id,
+                    revision=revision,
+                    chunk_index=chunk_index,
+                    prompt_id=extraction_prompt_info.prompt_id,
+                    prompt_hash=extraction_prompt_info.prompt_hash,
+                    input_context_hash=input_context_hash,
+                    input_context=extraction_prompt,
+                    stored_at=datetime.now(tz=UTC),
+                )
+            )
+        except Exception as exc:
+            logger.warning(
+                "chunk_evaluation_context_write_failed",
+                session_id=session_id,
+                chunk_index=chunk_index,
+                error=str(exc),
+            )
 
     return extraction
 
@@ -150,6 +205,7 @@ async def _process_single_pass(
     ch: ClickHouseClient,
     llm: LLMClient,
     settings: Settings,
+    prompts: dict[str, PromptInfo],
 ) -> bool:
     """Single-pass summarization for short sessions."""
     context_text = build_prompt_context(events, max_chars=char_budget)
@@ -163,11 +219,19 @@ async def _process_single_pass(
 
     # Extract structured facts (persisted as chunk_index=0)
     extraction = await _extract_and_persist_facts(
-        session_id, revision, events, char_budget, ch, llm, settings
+        session_id,
+        revision,
+        events,
+        char_budget,
+        ch,
+        llm,
+        settings,
+        prompts["extraction"],
     )
     if extraction is None:
         return False
 
+    summary_prompt_info = prompts["summary"]
     user_prompt = build_user_prompt(
         session_id=session_id,
         project=stats["project"],
@@ -181,14 +245,47 @@ async def _process_single_pass(
 
     start_time = asyncio.get_event_loop().time()
     llm_result = await _llm_call_with_retry(
-        llm, SYSTEM_PROMPT, user_prompt, session_id, "summarize"
+        llm, summary_prompt_info.prompt_text, user_prompt, session_id, "summarize"
     )
     if llm_result is None:
         return False
     llm_duration_ms = int((asyncio.get_event_loop().time() - start_time) * 1000)
 
+    input_context_hash = compute_hash(user_prompt)
+
+    # Store evaluation context if enabled
+    if settings.evaluation_enabled:
+        try:
+            await ch.write_summary_evaluation_context(
+                SummaryEvaluationContext(
+                    session_id=session_id,
+                    revision=revision,
+                    prompt_id=summary_prompt_info.prompt_id,
+                    prompt_hash=summary_prompt_info.prompt_hash,
+                    input_context_hash=input_context_hash,
+                    input_context=user_prompt,
+                    stored_at=datetime.now(tz=UTC),
+                )
+            )
+        except Exception as exc:
+            logger.warning(
+                "summary_evaluation_context_write_failed",
+                session_id=session_id,
+                error=str(exc),
+            )
+
     return await _write_summary(
-        session_id, revision, stats, files, tools, llm_result, llm_duration_ms, ch, settings
+        session_id,
+        revision,
+        stats,
+        files,
+        tools,
+        llm_result,
+        llm_duration_ms,
+        ch,
+        settings,
+        summary_prompt_info,
+        input_context_hash,
     )
 
 
@@ -203,6 +300,7 @@ async def _process_chunked(
     ch: ClickHouseClient,
     llm: LLMClient,
     settings: Settings,
+    prompts: dict[str, PromptInfo],
 ) -> bool:
     """Chunked extract-merge-synthesize for long sessions."""
     chunks = chunk_events(events, max_chars=char_budget)
@@ -219,7 +317,15 @@ async def _process_chunked(
     extractions: list[dict] = []
     for i, chunk in enumerate(chunks):
         extraction = await _extract_and_persist_facts(
-            session_id, revision, chunk, char_budget, ch, llm, settings, chunk_index=i,
+            session_id,
+            revision,
+            chunk,
+            char_budget,
+            ch,
+            llm,
+            settings,
+            prompts["extraction"],
+            chunk_index=i,
             total_chunks=len(chunks),
         )
         if extraction is None:
@@ -230,6 +336,7 @@ async def _process_chunked(
     merged_facts = merge_extractions(extractions)
 
     # Step 3: Synthesize final summary
+    synthesis_prompt_info = prompts["synthesis"]
     synthesis_prompt = build_synthesis_prompt(
         session_id=session_id,
         project=stats["project"],
@@ -243,14 +350,47 @@ async def _process_chunked(
 
     start_time = asyncio.get_event_loop().time()
     llm_result = await _llm_call_with_retry(
-        llm, SYNTHESIS_SYSTEM_PROMPT, synthesis_prompt, session_id, "synthesize"
+        llm, synthesis_prompt_info.prompt_text, synthesis_prompt, session_id, "synthesize"
     )
     if llm_result is None:
         return False
     llm_duration_ms = int((asyncio.get_event_loop().time() - start_time) * 1000)
 
+    input_context_hash = compute_hash(synthesis_prompt)
+
+    # Store evaluation context if enabled
+    if settings.evaluation_enabled:
+        try:
+            await ch.write_summary_evaluation_context(
+                SummaryEvaluationContext(
+                    session_id=session_id,
+                    revision=revision,
+                    prompt_id=synthesis_prompt_info.prompt_id,
+                    prompt_hash=synthesis_prompt_info.prompt_hash,
+                    input_context_hash=input_context_hash,
+                    input_context=synthesis_prompt,
+                    stored_at=datetime.now(tz=UTC),
+                )
+            )
+        except Exception as exc:
+            logger.warning(
+                "summary_evaluation_context_write_failed",
+                session_id=session_id,
+                error=str(exc),
+            )
+
     return await _write_summary(
-        session_id, revision, stats, files, tools, llm_result, llm_duration_ms, ch, settings
+        session_id,
+        revision,
+        stats,
+        files,
+        tools,
+        llm_result,
+        llm_duration_ms,
+        ch,
+        settings,
+        synthesis_prompt_info,
+        input_context_hash,
     )
 
 
@@ -264,6 +404,8 @@ async def _write_summary(
     llm_duration_ms: int,
     ch: ClickHouseClient,
     settings: Settings,
+    prompt_info: PromptInfo,
+    input_context_hash: str,
 ) -> bool:
     """Build and write a SessionSummary to ClickHouse."""
     summary = SessionSummary(
@@ -289,6 +431,9 @@ async def _write_summary(
         summarizer_model=settings.summarizer_model,
         summarized_at=datetime.now(tz=UTC),
         summarizer_version=settings.summarizer_version,
+        prompt_id=prompt_info.prompt_id,
+        prompt_hash=prompt_info.prompt_hash,
+        input_context_hash=input_context_hash,
     )
 
     try:
@@ -322,11 +467,60 @@ def _resolve_char_budget(settings: Settings) -> int:
     )
 
 
+async def _load_prompts(ch: ClickHouseClient, settings: Settings) -> dict[str, PromptInfo]:
+    """Load prompts for all roles based on PROMPT_SOURCE setting.
+
+    When PROMPT_SOURCE=database, tries to load from prompt_registry.
+    Falls back to code defaults for any role without an active DB prompt.
+    """
+    prompts: dict[str, PromptInfo] = {}
+
+    for role, default_text in _CODE_DEFAULTS.items():
+        if settings.prompt_source == "database":
+            try:
+                db_prompt = await ch.get_active_prompt(role)
+            except Exception as exc:
+                logger.warning(
+                    "prompt_registry_read_failed",
+                    role=role,
+                    error=str(exc),
+                )
+                db_prompt = None
+
+            if db_prompt:
+                prompts[role] = PromptInfo(
+                    prompt_id=db_prompt["prompt_id"],
+                    prompt_text=db_prompt["prompt_text"],
+                    prompt_hash=db_prompt["prompt_hash"],
+                )
+                logger.info(
+                    "prompt_loaded_from_db",
+                    role=role,
+                    prompt_id=db_prompt["prompt_id"],
+                )
+                continue
+
+            logger.info(
+                "prompt_fallback_to_code",
+                role=role,
+                reason="no active prompt in registry",
+            )
+
+        prompts[role] = PromptInfo(
+            prompt_id=_CODE_DEFAULT_PROMPT_ID,
+            prompt_text=default_text,
+            prompt_hash=compute_hash(default_text),
+        )
+
+    return prompts
+
+
 async def process_session(
     session_id: str,
     ch: ClickHouseClient,
     llm: LLMClient,
     settings: Settings,
+    prompts: dict[str, PromptInfo],
 ) -> bool:
     """Process a single session: load events, summarize, write result.
 
@@ -352,15 +546,40 @@ async def process_session(
 
     if needs_chunked_processing(events, max_chars=char_budget):
         return await _process_chunked(
-            session_id, revision, events, stats, files, tools, char_budget, ch, llm, settings
+            session_id,
+            revision,
+            events,
+            stats,
+            files,
+            tools,
+            char_budget,
+            ch,
+            llm,
+            settings,
+            prompts,
         )
     else:
         return await _process_single_pass(
-            session_id, revision, events, stats, files, tools, char_budget, ch, llm, settings
+            session_id,
+            revision,
+            events,
+            stats,
+            files,
+            tools,
+            char_budget,
+            ch,
+            llm,
+            settings,
+            prompts,
         )
 
 
-async def poll_cycle(ch: ClickHouseClient, llm: LLMClient, settings: Settings) -> None:
+async def poll_cycle(
+    ch: ClickHouseClient,
+    llm: LLMClient,
+    settings: Settings,
+    prompts: dict[str, PromptInfo],
+) -> None:
     """Run one polling cycle: discover and process unsummarized sessions."""
     logger.info(
         "poll_started",
@@ -382,7 +601,7 @@ async def poll_cycle(ch: ClickHouseClient, llm: LLMClient, settings: Settings) -
     logger.info("sessions_found", count=len(session_ids))
 
     for session_id in session_ids:
-        await process_session(session_id, ch, llm, settings)
+        await process_session(session_id, ch, llm, settings, prompts)
 
 
 async def run() -> None:
@@ -416,6 +635,8 @@ async def run() -> None:
         context_max_tokens=settings.context_max_tokens,
         session_language=settings.session_language,
         char_budget=char_budget,
+        prompt_source=settings.prompt_source,
+        evaluation_enabled=settings.evaluation_enabled,
     )
 
     llm = create_llm_client(settings)
@@ -431,13 +652,23 @@ async def run() -> None:
 
     ch = ClickHouseClient(settings)
 
+    # Load prompts (from DB or code defaults)
+    prompts = await _load_prompts(ch, settings)
+    for role, info in prompts.items():
+        logger.info(
+            "prompt_active",
+            role=role,
+            prompt_id=info.prompt_id or "(code default)",
+            prompt_hash=info.prompt_hash,
+        )
+
     if run_mode == "once":
-        await poll_cycle(ch, llm, settings)
+        await poll_cycle(ch, llm, settings, prompts)
         logger.info("summarizer_finished", run_mode="once")
         return
 
     while True:
-        await poll_cycle(ch, llm, settings)
+        await poll_cycle(ch, llm, settings, prompts)
         logger.debug("poll_sleeping", seconds=settings.poll_interval_seconds)
         await asyncio.sleep(settings.poll_interval_seconds)
 

@@ -33,5 +33,9 @@ class Settings(BaseSettings):
     session_language: str = "en"
     summarizer_version: str = "v1"
 
+    # Prompt management
+    prompt_source: str = "code"  # "code" or "database"
+    evaluation_enabled: bool = False
+
     # Logging
     log_level: str = "info"

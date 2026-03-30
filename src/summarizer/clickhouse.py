@@ -6,7 +6,12 @@ import httpx
 import structlog
 
 from summarizer.config import Settings
-from summarizer.models import ChunkExtraction, SessionSummary
+from summarizer.models import (
+    ChunkEvaluationContext,
+    ChunkExtraction,
+    SessionSummary,
+    SummaryEvaluationContext,
+)
 
 logger = structlog.get_logger()
 
@@ -133,6 +138,27 @@ ORDER BY ts ASC"""
 
         return await self._query(sql, params={"session_id": session_id})
 
+    async def get_active_prompt(self, role: str) -> dict | None:
+        """Load the active prompt for a given role from prompt_registry.
+
+        Returns dict with prompt_id, prompt_hash, prompt_text, or None if no active prompt.
+        """
+        sql = """\
+SELECT prompt_id, prompt_hash, prompt_text
+FROM prompt_registry FINAL
+WHERE prompt_role = {role:String}
+    AND status = 'active'
+LIMIT 1"""
+
+        rows = await self._query(sql, params={"role": role})
+        if rows:
+            return {
+                "prompt_id": rows[0]["prompt_id"],
+                "prompt_hash": rows[0]["prompt_hash"],
+                "prompt_text": rows[0]["prompt_text"],
+            }
+        return None
+
     async def write_summary(self, summary: SessionSummary) -> None:
         """Write a session summary to ClickHouse."""
 
@@ -151,7 +177,8 @@ INSERT INTO session_summaries (
     turn_count, tool_call_count,
     total_input_tokens, total_output_tokens,
     summary, key_decisions, files_modified, tools_used, tags,
-    summarizer_model, summarized_at, summarizer_version
+    summarizer_model, summarized_at, summarizer_version,
+    prompt_id, prompt_hash, input_context_hash
 ) VALUES (
     '{summary.session_id}',
     {summary.revision},
@@ -174,7 +201,10 @@ INSERT INTO session_summaries (
     {fmt_array(summary.tags)},
     '{summary.summarizer_model}',
     '{fmt_ts(summary.summarized_at)}',
-    '{summary.summarizer_version}'
+    '{summary.summarizer_version}',
+    '{summary.prompt_id}',
+    '{summary.prompt_hash}',
+    '{summary.input_context_hash}'
 )"""
 
         await self._execute(sql)
@@ -196,7 +226,8 @@ INSERT INTO session_chunk_extractions (
     files_changed, decisions, constraints, bugs_resolved, tradeoffs,
     dependencies_changed, errors_encountered, test_actions,
     security_relevant, rollback_risks, boundaries,
-    summarizer_model, summarizer_version, extracted_at
+    summarizer_model, summarizer_version, extracted_at,
+    prompt_id, prompt_hash, input_context_hash
 ) VALUES (
     '{chunk.session_id}',
     {chunk.revision},
@@ -217,7 +248,10 @@ INSERT INTO session_chunk_extractions (
     {fmt_array(chunk.boundaries)},
     '{chunk.summarizer_model}',
     '{chunk.summarizer_version}',
-    '{fmt_ts(chunk.extracted_at)}'
+    '{fmt_ts(chunk.extracted_at)}',
+    '{chunk.prompt_id}',
+    '{chunk.prompt_hash}',
+    '{chunk.input_context_hash}'
 )"""
 
         await self._execute(sql)
@@ -243,6 +277,62 @@ ORDER BY chunk_index ASC"""
         return await self._query(
             sql,
             params={"session_id": session_id, "version": summarizer_version},
+        )
+
+    async def write_chunk_evaluation_context(self, context: ChunkEvaluationContext) -> None:
+        """Write the full input context for a chunk extraction."""
+
+        def fmt_ts(dt: datetime) -> str:
+            return dt.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+
+        sql = f"""\
+INSERT INTO chunk_evaluation_contexts (
+    session_id, revision, chunk_index,
+    prompt_id, prompt_hash, input_context_hash,
+    input_context, stored_at
+) VALUES (
+    '{context.session_id}',
+    {context.revision},
+    {context.chunk_index},
+    '{context.prompt_id}',
+    '{context.prompt_hash}',
+    '{context.input_context_hash}',
+    '{context.input_context.replace("'", "\\'")}',
+    '{fmt_ts(context.stored_at)}'
+)"""
+
+        await self._execute(sql)
+        logger.debug(
+            "chunk_evaluation_context_written",
+            session_id=context.session_id,
+            chunk_index=context.chunk_index,
+        )
+
+    async def write_summary_evaluation_context(self, context: SummaryEvaluationContext) -> None:
+        """Write the full input context for a summary."""
+
+        def fmt_ts(dt: datetime) -> str:
+            return dt.strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+
+        sql = f"""\
+INSERT INTO summary_evaluation_contexts (
+    session_id, revision,
+    prompt_id, prompt_hash, input_context_hash,
+    input_context, stored_at
+) VALUES (
+    '{context.session_id}',
+    {context.revision},
+    '{context.prompt_id}',
+    '{context.prompt_hash}',
+    '{context.input_context_hash}',
+    '{context.input_context.replace("'", "\\'")}',
+    '{fmt_ts(context.stored_at)}'
+)"""
+
+        await self._execute(sql)
+        logger.debug(
+            "summary_evaluation_context_written",
+            session_id=context.session_id,
         )
 
 
