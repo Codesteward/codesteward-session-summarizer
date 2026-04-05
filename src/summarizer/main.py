@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -615,7 +616,7 @@ async def run() -> None:
 
     structlog.configure(
         wrapper_class=structlog.make_filtering_bound_logger(
-            structlog.get_level_from_name(settings.log_level)
+            logging.getLevelName(settings.log_level.upper())
         ),
     )
 
