@@ -1,3 +1,6 @@
+-- +goose NO TRANSACTION
+
+-- +goose Up
 CREATE TABLE IF NOT EXISTS audit.prompt_registry (
     prompt_id          String,
     prompt_role        LowCardinality(String),  -- 'extraction', 'synthesis', 'summary'

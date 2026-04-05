@@ -145,7 +145,23 @@ The character budget for LLM prompts is calculated automatically from `CONTEXT_M
 
 ## 🗄️ ClickHouse migrations
 
-Apply migration files before running the summarizer:
+Migration files are [Goose](https://github.com/pressly/goose)-compatible and can also be applied manually.
+
+### Option A: Using the migrations container (recommended)
+
+Each release publishes a migrations container to GHCR. It uses [Goose](https://github.com/pressly/goose) to apply migrations with automatic version tracking:
+
+```bash
+docker run --rm --network host \
+  -e GOOSE_DBSTRING="http://default:@localhost:8123/audit" \
+  ghcr.io/bitkaio/codesteward/codesteward-session-summarizer-migrations:latest
+```
+
+> **Note:** Use `http://host:8123` for the HTTP protocol or `tcp://host:9000` for the native TCP protocol.
+
+### Option B: Manual SQL
+
+The migration files work as plain SQL — the goose annotations are comments that have no effect when run directly:
 
 ```bash
 clickhouse-client --multiquery < migrations/001_session_summaries.sql
@@ -154,6 +170,8 @@ clickhouse-client --multiquery < migrations/003_prompt_registry.sql
 clickhouse-client --multiquery < migrations/004_prompt_provenance.sql
 clickhouse-client --multiquery < migrations/005_evaluation_contexts.sql
 ```
+
+### Migration files
 
 - `001_session_summaries.sql` — creates the `session_summaries` table with revision-based history
 - `002_session_chunk_extractions.sql` — creates the `session_chunk_extractions` table for per-chunk fact extractions

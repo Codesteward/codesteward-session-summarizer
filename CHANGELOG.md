@@ -21,6 +21,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Optional evaluation data collection (`EVALUATION_ENABLED=true`) storing full input contexts in TTL-managed ClickHouse tables for downstream quality evaluation
 - Prompt registry table (`prompt_registry`) for managing prompt versions with lineage tracking
 - `hashing.py` utility for deterministic SHA-256 hash computation (truncated to 16 hex chars)
+- Goose-compatible migration files with `-- +goose NO TRANSACTION` annotations for ClickHouse
+- Migrations Docker container published to GHCR on each release (`*-migrations` image)
 
 ## [0.3.0] - 2026-03-28
 

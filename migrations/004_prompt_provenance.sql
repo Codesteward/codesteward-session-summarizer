@@ -1,3 +1,6 @@
+-- +goose NO TRANSACTION
+
+-- +goose Up
 ALTER TABLE audit.session_summaries
     ADD COLUMN IF NOT EXISTS prompt_id String DEFAULT '',
     ADD COLUMN IF NOT EXISTS prompt_hash String DEFAULT '',

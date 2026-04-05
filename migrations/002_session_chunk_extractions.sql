@@ -1,4 +1,6 @@
--- 009_session_chunk_extractions.sql
+-- +goose NO TRANSACTION
+
+-- +goose Up
 -- Structured fact extractions from session chunks.
 -- Written by codesteward-session-summarizer during incremental summarization.
 -- Read back for merge + synthesis into session_summaries.

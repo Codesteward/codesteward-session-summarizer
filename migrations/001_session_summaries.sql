@@ -1,4 +1,6 @@
--- 008_session_summaries.sql
+-- +goose NO TRANSACTION
+
+-- +goose Up
 -- Pre-computed LLM summaries of development sessions.
 -- Written by codesteward-session-summarizer, read by codesteward-mcp.
 

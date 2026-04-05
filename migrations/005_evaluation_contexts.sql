@@ -1,3 +1,6 @@
+-- +goose NO TRANSACTION
+
+-- +goose Up
 CREATE TABLE IF NOT EXISTS audit.chunk_evaluation_contexts (
     session_id         String,
     revision           UInt32,
