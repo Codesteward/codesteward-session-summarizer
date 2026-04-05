@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-04-05
+
+### Fixed
+
+- **structlog API compatibility** — replaced `structlog.get_level_from_name()` with `logging.getLevelName()` from the stdlib for compatibility with structlog ≥ 25.x which removed that function
+
 ## [0.4.0] - 2026-03-30
 
 ### Added
