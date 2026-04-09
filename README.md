@@ -14,7 +14,7 @@
   <img src="https://img.shields.io/badge/python-3.12%2B-3776AB?logo=python&logoColor=white" alt="Python 3.12+">
   <img src="https://img.shields.io/badge/ClickHouse-FFCC01?logo=clickhouse&logoColor=black" alt="ClickHouse">
   <img src="https://img.shields.io/badge/Docker-ready-2496ED?logo=docker&logoColor=white" alt="Docker">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-BSD--3--Clause-blue" alt="BSD-3-Clause"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="Apache-2.0"></a>
 </p>
 
 <p align="center">
@@ -154,7 +154,7 @@ Each release publishes a migrations container to GHCR. It uses [Goose](https://g
 ```bash
 docker run --rm --network host \
   -e GOOSE_DBSTRING="http://default:@localhost:8123/audit" \
-  ghcr.io/bitkaio/codesteward/codesteward-session-summarizer-migrations:latest
+  ghcr.io/codesteward/codesteward-session-summarizer-migrations:latest
 ```
 
 > **Note:** Use `http://host:8123` for the HTTP protocol or `tcp://host:9000` for the native TCP protocol.
@@ -195,4 +195,4 @@ uv run ruff format --check src/ tests/
 
 ## 📄 License
 
-BSD-3-Clause. See [LICENSE](LICENSE) for details.
+Apache-2.0. See [LICENSE](LICENSE) for details.

@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-04-09
+
+### Added
+- Goose-compatible migration files with `-- +goose NO TRANSACTION` annotations for ClickHouse
+- Migrations Docker container published to GHCR on each release (`*-migrations` image), based on `ghcr.io/kukymbr/goose-docker`
+
+### Changed
+- License changed from BSD-3-Clause to Apache-2.0 (copyright holder remains bitkaio LLC)
+- Project moved to the Codesteward GitHub organization
+
 ## [0.4.1] - 2026-04-05
 
 ### Fixed
@@ -21,8 +31,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Optional evaluation data collection (`EVALUATION_ENABLED=true`) storing full input contexts in TTL-managed ClickHouse tables for downstream quality evaluation
 - Prompt registry table (`prompt_registry`) for managing prompt versions with lineage tracking
 - `hashing.py` utility for deterministic SHA-256 hash computation (truncated to 16 hex chars)
-- Goose-compatible migration files with `-- +goose NO TRANSACTION` annotations for ClickHouse
-- Migrations Docker container published to GHCR on each release (`*-migrations` image)
 
 ## [0.3.0] - 2026-03-28
 

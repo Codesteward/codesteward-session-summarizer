@@ -1,6 +1,6 @@
 [project]
 name = "codesteward-session-summarizer"
-version = "0.4.0"
+version = "0.5.0"
 description = "Background service that summarizes dev sessions from ClickHouse audit events using a local LLM"
 requires-python = ">=3.12"
 dependencies = [
